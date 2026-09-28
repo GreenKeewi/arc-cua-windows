@@ -133,6 +133,9 @@ type_text_target:
 
 type_text_input:
   effect_name / filename
+
+type_text_then_key:
+  NONE / ENTER / TAB
 ```
 
 One JEV request can ask for the operation and speculative operation-specific choices in parallel. Only the head corresponding to the selected operation is consumed.

@@ -535,7 +535,7 @@ assert result.status == TerminalKind.SUBTASK_COMPLETE</code></pre>
   <p>Every actionable target has a semantic or visual guard (SHA-256 fingerprint of element state). Before executing a chosen mutation, the backend checks that the target still corresponds to the UI state JEV observed. A stale action is never blindly replayed.</p>
 
   <h3>Post-action settling</h3>
-  <p>After a mutating action, the runtime re-observes the desktop until structurally stable or a timeout is reached. The decision model decides <em>what to do</em>; the runtime decides <em>when the UI is ready to reason over again</em>.</p>
+  <p>After a mutating action, the runtime waits until the desktop has reacted and gone quiet, then observes it once. On macOS it settles on a cheap visual probe (frontmost window plus a small thumbnail) instead of repeated AX + OCR observations. The decision model decides <em>what to do</em>; the runtime decides <em>when the UI is ready to reason over again</em>.</p>
 
   <h3>Terminal states</h3>
   <div class="table-wrap">
@@ -655,6 +655,9 @@ executor.cancel()                     # Thread-safe stop signal</code></pre>
       <li><span class="field-name">stale_retries</span> <span class="field-type">int = 8</span> <span class="field-desc">Max freshness re-observations before giving up</span></li>
       <li><span class="field-name">no_change_limit</span> <span class="field-type">int = 3</span> <span class="field-desc">Consecutive no-change actions before BLOCKED</span></li>
       <li><span class="field-name">post_action_settle_s</span> <span class="field-type">float = 0.03</span> <span class="field-desc">Minimum settling delay</span></li>
+      <li><span class="field-name">settle_reaction_s</span> <span class="field-type">float = 0.6</span> <span class="field-desc">Max wait for a visible reaction</span></li>
+      <li><span class="field-name">settle_quiet_s</span> <span class="field-type">float = 0.15</span> <span class="field-desc">Unchanged time required after a reaction</span></li>
+      <li><span class="field-name">settle_timeout_s</span> <span class="field-type">float = 2.0</span> <span class="field-desc">Upper bound on probe-based settling</span></li>
       <li><span class="field-name">timeout_s</span> <span class="field-type">float|None = None</span> <span class="field-desc">Wall-clock timeout (None = no limit)</span></li>
       <li><span class="field-name">verify</span> <span class="field-type">VerifyFn|None = None</span> <span class="field-desc">Verification callback for SUBTASK_COMPLETE</span></li>
     </ul>

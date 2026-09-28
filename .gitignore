@@ -8,3 +8,4 @@ build/
 .env
 examples/demo_agent.py
 .DS_Store
+output/

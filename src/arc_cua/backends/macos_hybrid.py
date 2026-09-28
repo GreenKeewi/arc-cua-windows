@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any
 
 from ..errors import (
@@ -19,9 +20,44 @@ from ..models import (
     ExecutableAction,
 )
 from .macos_ax import MacOSAXBackend
-from .macos_ocr import MacOSOCRProvider
+from .macos_ocr import MacOSOCRProvider, window_thumbnail
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class VisualProbe:
+    """Cheap settle probe: frontmost window identity plus a small thumbnail.
+
+    Two probes are equal when the window is the same and almost no thumbnail
+    pixels changed noticeably, so a blinking caret does not count as activity.
+    """
+
+    pid: int | None
+    window_id: int | None
+    bounds: tuple[float, float, float, float] | None
+    pixels: bytes
+
+    PIXEL_DELTA = 24
+    MAX_CHANGED_FRACTION = 0.002
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, VisualProbe):
+            return NotImplemented
+        if (self.pid, self.window_id, self.bounds) != (other.pid, other.window_id, other.bounds):
+            return False
+        if len(self.pixels) != len(other.pixels):
+            return False
+        limit = max(1, int(len(self.pixels) * self.MAX_CHANGED_FRACTION))
+        changed = 0
+        for a, b in zip(self.pixels, other.pixels):
+            if abs(a - b) > self.PIXEL_DELTA:
+                changed += 1
+                if changed > limit:
+                    return False
+        return True
+
+    __hash__ = None  # type: ignore[assignment]  # tolerance-based equality
 
 
 class MacOSHybridBackend:
@@ -222,6 +258,25 @@ class MacOSHybridBackend:
             ),
         )
 
+
+    def settle_probe(self) -> VisualProbe:
+        """Lightweight signal for post-action settling (no AX walk, no OCR)."""
+
+        pid = self.ocr.frontmost_pid()
+        window = (
+            self.ocr.front_window(pid)
+            if pid is not None
+            else None
+        )
+        if window is None:
+            return VisualProbe(pid, None, None, b"")
+        bounds = window.bounds
+        return VisualProbe(
+            pid,
+            window.window_id,
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            window_thumbnail(bounds),
+        )
 
     def is_fresh(
         self,
@@ -604,6 +659,9 @@ def _ax_framework() -> Any:
     return AX
 
 
+# AX attribute names are plain strings ("AXRole", "AXChildren", ...). Use them
+# directly: a getattr on a constant PyObjC does not export (kAXSheetsAttribute)
+# rescans framework metadata on every call, which dominated observation time.
 def _ax_copy_attribute(
     AX: Any,
     element: Any,
@@ -668,11 +726,7 @@ def _ax_role(
     value = _ax_copy_attribute(
         AX,
         element,
-        getattr(
-            AX,
-            "kAXRoleAttribute",
-            "AXRole",
-        ),
+        "AXRole",
     )
 
     return str(
@@ -715,16 +769,8 @@ def _ax_children(
     children: list[Any] = []
 
     for attribute in (
-        getattr(
-            AX,
-            "kAXSheetsAttribute",
-            "AXSheets",
-        ),
-        getattr(
-            AX,
-            "kAXChildrenAttribute",
-            "AXChildren",
-        ),
+        "AXSheets",
+        "AXChildren",
     ):
         value = _ax_copy_attribute(
             AX,
@@ -750,11 +796,7 @@ def _find_modal_roots(
     focused_window = _ax_copy_attribute(
         AX,
         app,
-        getattr(
-            AX,
-            "kAXFocusedWindowAttribute",
-            "AXFocusedWindow",
-        ),
+        "AXFocusedWindow",
     )
 
     if focused_window is not None:
@@ -768,11 +810,7 @@ def _find_modal_roots(
     app_windows = _ax_copy_attribute(
         AX,
         app,
-        getattr(
-            AX,
-            "kAXWindowsAttribute",
-            "AXWindows",
-        ),
+        "AXWindows",
     )
 
     for window in _ax_values(

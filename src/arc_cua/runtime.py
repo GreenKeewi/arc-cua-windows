@@ -32,6 +32,13 @@ class RuntimeConfig:
     stale_retries: int = 8
     no_change_limit: int = 3
     post_action_settle_s: float = 0.03
+    # Probe-based settling (backends that implement ``settle_probe``): wait up to
+    # ``settle_reaction_s`` for a visible reaction, then until the probe has been
+    # unchanged for ``settle_quiet_s``, never longer than ``settle_timeout_s``.
+    settle_reaction_s: float = 0.6
+    settle_quiet_s: float = 0.15
+    settle_timeout_s: float = 2.0
+    settle_poll_s: float = 0.02
     timeout_s: float | None = None
     verify: VerifyFn | None = None
 
@@ -60,12 +67,75 @@ class DesktopExecutor:
         """Signal the executor to stop after the current action completes."""
         self._cancel.set()
 
+    def _probe(self) -> Any:
+        probe = getattr(self.backend, "settle_probe", None)
+        if probe is None:
+            return None
+        try:
+            return probe()
+        except Exception as exc:  # A failed probe must not fail the action.
+            logger.debug("settle probe failed: %s", exc)
+            return None
+
+    def _settle_with_probe(self, before_probe: Any) -> DesktopSnapshot:
+        """Wait for the UI to react and go quiet, using the backend's cheap probe.
+
+        Full observations can be expensive and noisy (OCR varies between passes),
+        so settling compares lightweight probes and observes once at the end.
+        """
+        self._wait_for_quiet(before_probe)
+        return self.backend.observe()
+
+    def _wait_for_quiet(self, before_probe: Any) -> Any:
+        """Poll the probe until the UI reacted and went quiet; return the last probe."""
+        config = self.config
+        started = time.perf_counter()
+        previous = before_probe
+        changed = False
+        quiet_since = started
+        while True:
+            time.sleep(config.settle_poll_s)
+            current = self._probe()
+            now = time.perf_counter()
+            if current is None:
+                break
+            if current != previous:
+                changed = changed or current != before_probe
+                quiet_since = now
+            previous = current
+            elapsed = now - started
+            if elapsed >= config.settle_timeout_s:
+                break
+            if changed and now - quiet_since >= config.settle_quiet_s:
+                break
+            if not changed and elapsed >= config.settle_reaction_s:
+                break
+        return previous
+
+    def _execute(self, before: DesktopSnapshot, action: ExecutableAction, before_probe: Any) -> Any:
+        """Execute the action; return the probe to settle against afterwards."""
+        self.backend.execute(before, action)
+        if action.kind == ActionKind.TYPE_TEXT and action.key:
+            # Let the entered value land (autocomplete, validation) before submitting it.
+            if before_probe is not None:
+                before_probe = self._wait_for_quiet(before_probe)
+            self.backend.execute(
+                self.backend.observe(),  # the typed value changed the state
+                ExecutableAction(kind=ActionKind.PRESS_KEY, key=action.key),
+            )
+        return before_probe
+
     def _observe_after_action(
         self,
         *,
         before: DesktopSnapshot,
         action: ExecutableAction,
+        before_probe: Any = None,
     ) -> DesktopSnapshot:
+        if action.kind == ActionKind.WAIT:
+            return self.backend.observe()
+        if before_probe is not None:
+            return self._settle_with_probe(before_probe)
         if action.kind == ActionKind.TYPE_TEXT:
             minimum_wait_s = 0.65
             timeout_s = 2.5
@@ -241,8 +311,9 @@ class DesktopExecutor:
                 except KeyError:
                     target = None
 
+            before_probe = self._probe()
             try:
-                self.backend.execute(before, action)
+                before_probe = self._execute(before, action, before_probe)
             except StaleDesktopState:
                 stale_retries += 1
                 snapshot = self.backend.observe()
@@ -262,7 +333,7 @@ class DesktopExecutor:
                 return result
 
             stale_retries = 0
-            snapshot = self._observe_after_action(before=before, action=action)
+            snapshot = self._observe_after_action(before=before, action=action, before_probe=before_probe)
 
             record = self._make_record(
                 history=history,

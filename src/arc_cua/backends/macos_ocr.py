@@ -623,6 +623,62 @@ def _capture_window(
     return image
 
 
+def window_thumbnail(
+    bounds: Bounds,
+    *,
+    width: int = 96,
+    height: int = 64,
+) -> bytes:
+    """Grayscale thumbnail of the on-screen pixels inside ``bounds``.
+
+    Composites every window over that region, so sheets and popovers attached to
+    the window are included. Used for cheap settle checks, not for perception.
+    """
+
+    Quartz, _, _, _ = _frameworks()
+
+    image = Quartz.CGWindowListCreateImage(
+        Quartz.CGRectMake(
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+        ),
+        Quartz.kCGWindowListOptionOnScreenOnly,
+        Quartz.kCGNullWindowID,
+        Quartz.kCGWindowImageBoundsIgnoreFraming
+        | Quartz.kCGWindowImageNominalResolution,
+    )
+
+    if image is None:
+        raise PermissionError(
+            "Could not capture the screen. "
+            "Check Screen Recording permission."
+        )
+
+    context = Quartz.CGBitmapContextCreate(
+        None,
+        width,
+        height,
+        8,
+        width,
+        Quartz.CGColorSpaceCreateDeviceGray(),
+        Quartz.kCGImageAlphaNone,
+    )
+    Quartz.CGContextSetInterpolationQuality(
+        context,
+        Quartz.kCGInterpolationLow,
+    )
+    Quartz.CGContextDrawImage(
+        context,
+        Quartz.CGRectMake(0, 0, width, height),
+        image,
+    )
+    return bytes(
+        Quartz.CGBitmapContextGetData(context).as_buffer(width * height)
+    )
+
+
 def _raise_on_vision_error(
     result: Any,
 ) -> None:

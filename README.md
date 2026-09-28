@@ -135,7 +135,11 @@ Both normalize into `DesktopElement`s that JEV reasons over. JEV receives struct
 
 ### Runtime-owned settling
 
-After a mutating action, `arc-cua` re-observes the UI until the desktop is structurally stable or a timeout is reached. The decision model decides **what to do**; the runtime decides **when the UI is ready to reason over again**.
+After a mutating action, `arc-cua` waits until the desktop has reacted and gone quiet, then observes it once. The decision model decides **what to do**; the runtime decides **when the UI is ready to reason over again**.
+
+The macOS backend settles on a cheap visual probe: the frontmost window plus a small grayscale thumbnail of its on-screen area (sheets and panels included). The runtime waits up to `settle_reaction_s` (0.6 s; covers an app still busy with the previous action) for a visible reaction, then until the probe has been unchanged for `settle_quiet_s` (0.15 s), capped at `settle_timeout_s` (2 s). A caret-sized change does not count as activity. Full AX + OCR observations are not used for settling because OCR output varies slightly between passes even when the UI is identical. Backends without a `settle_probe()` method keep snapshot-based settling.
+
+`TYPE_TEXT` can press `ENTER` or `TAB` right after entering its value (`Decision.key`), so a path, search or name field can be filled and submitted in one decision. The runtime waits for the typed value to settle before pressing the key, and the history records the key with the `TYPE_TEXT` action.
 
 ### Terminal states
 

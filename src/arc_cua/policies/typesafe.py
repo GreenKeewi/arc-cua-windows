@@ -12,6 +12,7 @@ from ..models import (
     DEFAULT_HOTKEYS,
     DEFAULT_PRESS_KEYS,
     SCROLL_DIRECTIONS,
+    TYPE_TEXT_SUBMIT_KEYS,
     ActionKind,
     ActionRecord,
     Decision,
@@ -148,6 +149,11 @@ class TypeSafeJevPolicy:
             inputs = candidate_maps.get(f"{operation}_input", {})
             answer = _validate_choice(answers.get(f"{operation.lower()}_input", {}), set(inputs))
             kwargs["input_key"] = answer["choice"]
+
+        if kind == ActionKind.TYPE_TEXT and "type_text_then_key" in candidate_maps:
+            answer = _validate_choice(answers.get("type_text_then_key", {}), set(candidate_maps["type_text_then_key"]))
+            if answer["choice"] != "NONE":
+                kwargs["key"] = answer["choice"]
 
         if kind == ActionKind.PRESS_KEY:
             choices = candidate_maps["PRESS_KEY_value"]
@@ -294,6 +300,26 @@ class TypeSafeJevPolicy:
                         "rules": "Choose which agent-supplied input value this operation should use. Never invent a value.",
                     },
                 }
+
+        if ActionKind.TYPE_TEXT.value in operations and subtask.inputs:
+            candidate_maps["type_text_then_key"] = {
+                "NONE": "Only enter the value; do not press a key afterwards.",
+                **{key: f"Enter the value, then press {key}." for key in TYPE_TEXT_SUBMIT_KEYS},
+            }
+            questions["type_text_then_key"] = {
+                "type": "choice",
+                "criteria": candidate_maps["type_text_then_key"],
+                "instructions": {
+                    "operation": "TYPE_TEXT",
+                    "rules": (
+                        "If TYPE_TEXT is selected, choose whether to press a key right after entering the value. "
+                        "Choose ENTER only when submitting or committing this exact value is clearly the next step "
+                        "(for example a path, search, or name field that the subtask then confirms). "
+                        "Choose TAB to move to the next field. Choose NONE when the value must be reviewed, "
+                        "combined with other input, or submitted differently."
+                    ),
+                },
+            }
 
         candidate_maps["PRESS_KEY_value"] = {key: key for key in DEFAULT_PRESS_KEYS}
         questions["press_key_value"] = {

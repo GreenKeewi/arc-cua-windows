@@ -124,7 +124,7 @@ Key design principles:
 - JEV can only pick targets and operations the current desktop actually exposes.
 - Literal values always come from the agent via Subtask.inputs.
 - One JEV call resolves operation + all operation-specific targets in parallel (speculative fan-out).
-- Post-action settling is polling-based observation until structural stability.
+- Post-action settling waits for the UI to react and go quiet (cheap visual probe on macOS), then observes once.
 
 ---
 
@@ -404,6 +404,10 @@ class RuntimeConfig:
     stale_retries: int = 8           # Max freshness re-observations before giving up
     no_change_limit: int = 3         # Consecutive no-change actions before BLOCKED
     post_action_settle_s: float = 0.03
+    settle_reaction_s: float = 0.6   # Max wait for a visible reaction to an action
+    settle_quiet_s: float = 0.15     # Required unchanged time after a reaction
+    settle_timeout_s: float = 2.0    # Upper bound on probe-based settling
+    settle_poll_s: float = 0.02
     timeout_s: float | None = None   # Wall-clock timeout (None = no limit)
     verify: VerifyFn | None = None   # Verification callback for SUBTASK_COMPLETE
 ```
@@ -424,7 +428,7 @@ When set on RuntimeConfig, called before accepting SUBTASK_COMPLETE. If it retur
 4. Materialize action (validate target exists, is legal, resolve input_key)
 5. Check freshness (target guard matches current state)
 6. Execute via backend
-7. Wait for UI settling (polling-based structural stability)
+7. Wait for UI settling (reaction, then quiet; cheap probe when the backend provides one)
 8. Record action, yield step event
 9. Check no-change limit, budget, timeout, cancellation
 10. Loop

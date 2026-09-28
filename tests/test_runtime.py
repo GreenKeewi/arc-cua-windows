@@ -337,3 +337,34 @@ def test_backend_error_returns_needs_agent() -> None:
     result = DesktopExecutor(FailingBackend(), policy).run(task)
     assert result.status == TerminalKind.NEEDS_AGENT
     assert "OSError" in (result.reason or "")
+
+
+def test_type_text_submit_key_is_pressed_after_the_value() -> None:
+    executed = []
+
+    def record(state: dict, action) -> None:
+        executed.append((action.kind, action.value, action.key))
+        transition(state, action)
+
+    backend = StateMachineBackend({"value": ""}, snapshot, record)
+    policy = ScriptedPolicy([
+        Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="query", key="ENTER"),
+        Decision(terminal=TerminalKind.SUBTASK_COMPLETE),
+    ])
+    task = Subtask(goal="Search", verification=("Searched",), inputs={"query": "Blur"})
+    result = DesktopExecutor(backend, policy).run(task)
+    assert result.status == TerminalKind.SUBTASK_COMPLETE
+    assert executed == [(ActionKind.TYPE_TEXT, "Blur", "ENTER"), (ActionKind.PRESS_KEY, None, "ENTER")]
+    assert len(result.history) == 1
+
+
+def test_type_text_rejects_non_submit_keys() -> None:
+    import pytest
+
+    from arc_cua.errors import InvalidDecision
+    from arc_cua.validation import materialize_action
+
+    task = Subtask(goal="Search", verification=("Searched",), inputs={"query": "Blur"})
+    decision = Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="query", key="ESCAPE")
+    with pytest.raises(InvalidDecision, match="ESCAPE"):
+        materialize_action(decision, snapshot({"value": ""}), task)

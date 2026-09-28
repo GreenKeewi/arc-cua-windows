@@ -318,6 +318,10 @@ DEFAULT_HOTKEYS: tuple[str, ...] = (
 
 SCROLL_DIRECTIONS: tuple[str, ...] = ("UP", "DOWN", "LEFT", "RIGHT")
 
+# Keys a TYPE_TEXT decision may press right after entering its value
+# (``Decision.key``), e.g. to submit a search or path field or move to the next field.
+TYPE_TEXT_SUBMIT_KEYS: tuple[str, ...] = ("ENTER", "TAB")
+
 
 class StepEvent:
     """Emitted by run_iter() after each decision cycle."""

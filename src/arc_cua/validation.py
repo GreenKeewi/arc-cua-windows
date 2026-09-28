@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .errors import InvalidDecision
-from .models import DEFAULT_HOTKEYS, ActionKind, Decision, DesktopSnapshot, ExecutableAction, Subtask
+from .models import DEFAULT_HOTKEYS, TYPE_TEXT_SUBMIT_KEYS, ActionKind, Decision, DesktopSnapshot, ExecutableAction, Subtask
 
 _TARGETED = {
     ActionKind.CLICK,
@@ -60,6 +60,8 @@ def materialize_action(
         if kind == ActionKind.TYPE_TEXT and not isinstance(value, str):
             value = str(value)
 
+    if kind == ActionKind.TYPE_TEXT and decision.key not in (None, *TYPE_TEXT_SUBMIT_KEYS):
+        raise InvalidDecision(f"TYPE_TEXT cannot be followed by key {decision.key!r}")
     if kind == ActionKind.PRESS_KEY and not decision.key:
         raise InvalidDecision("PRESS_KEY requires key")
     if kind == ActionKind.HOTKEY:
