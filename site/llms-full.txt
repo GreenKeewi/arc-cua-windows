@@ -284,11 +284,12 @@ class Decision:
     target_id: str | None = None
     secondary_target_id: str | None = None
     input_key: str | None = None
-    key: str | None = None
+    key: str | None = None             # PRESS_KEY key, or ENTER/TAB pressed after TYPE_TEXT
     hotkey: str | None = None
     scroll_direction: str | None = None
     drag_dx: float | None = None
     drag_dy: float | None = None
+    click_modifier: str | None = None  # CLICK only: MOD (toggle in selection) or SHIFT (extend range)
     confidence: float | None = None
     latency_ms: int | None = None
     raw: Mapping[str, Any] = {}  # Raw policy response for debugging

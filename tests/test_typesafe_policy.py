@@ -83,3 +83,36 @@ def test_type_text_submit_head_is_not_offered_without_inputs() -> None:
     finally:
         policy.client.close()
     assert "type_text_then_key" not in questions
+
+
+@pytest.mark.parametrize(("modifier", "expected"), [("MOD", "MOD"), ("SHIFT", "SHIFT"), ("NONE", None)])
+def test_click_can_hold_a_selection_modifier(monkeypatch, modifier, expected) -> None:
+    policy = TypeSafeJevPolicy(api_key="test")
+    captured = []
+
+    def answer(choice, choices):
+        return {"choice": choice, "confidence": 1.0,
+                "probabilities": {key: float(key == choice) for key in choices}}
+
+    def respond(body):
+        captured.append(body)
+        questions = body["questions"]
+        return {"answers": {
+            "operation": answer("CLICK", questions["operation"]["criteria"]),
+            "click_target": answer("row_2", questions["click_target"]["criteria"]),
+            "click_modifier": answer(modifier, questions["click_modifier"]["criteria"]),
+        }}
+
+    monkeypatch.setattr(policy, "_post", respond)
+    snapshot = DesktopSnapshot(application="Files", window="Inbox", revision="1", elements=tuple(
+        DesktopElement(id=f"row_{index}", role="row", name=f"Report {index}.pdf", actions=(ActionKind.CLICK,))
+        for index in range(3)
+    ))
+    try:
+        decision = policy.decide(subtask=Subtask(goal="Select reports", verification=("Selected",)),
+                                 snapshot=snapshot, history=())
+    finally:
+        policy.client.close()
+    assert set(captured[0]["questions"]["click_modifier"]["criteria"]) == {"NONE", "MOD", "SHIFT"}
+    assert decision.kind == ActionKind.CLICK
+    assert decision.click_modifier == expected

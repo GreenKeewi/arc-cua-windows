@@ -19,7 +19,7 @@ from ..models import (
     DesktopSnapshot,
     ExecutableAction,
 )
-from .macos_ax import MacOSAXBackend
+from .macos_ax import MacOSAXBackend, modifier_flags
 from .macos_ocr import MacOSOCRProvider, window_thumbnail
 
 logger = logging.getLogger(__name__)
@@ -421,6 +421,11 @@ class MacOSHybridBackend:
                 target.bounds,
                 count=1,
                 button="left",
+                flags=(
+                    modifier_flags((action.click_modifier,))
+                    if action.click_modifier
+                    else 0
+                ),
             )
 
             return
@@ -1126,6 +1131,7 @@ def _click(
     *,
     count: int,
     button: str,
+    flags: int = 0,
 ) -> None:
 
     Q = _quartz()
@@ -1197,6 +1203,9 @@ def _click(
                 mouse_button,
             )
         )
+
+        Q.CGEventSetFlags(down, flags)
+        Q.CGEventSetFlags(up, flags)
 
         Q.CGEventSetIntegerValueField(
             down,

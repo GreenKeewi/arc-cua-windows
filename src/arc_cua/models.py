@@ -195,6 +195,7 @@ class Decision:
     scroll_direction: str | None = None
     drag_dx: float | None = None
     drag_dy: float | None = None
+    click_modifier: str | None = None
     confidence: float | None = None
     latency_ms: int | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
@@ -217,6 +218,7 @@ class ExecutableAction:
     scroll_direction: str | None = None
     drag_dx: float | None = None
     drag_dy: float | None = None
+    click_modifier: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +256,7 @@ class ActionRecord:
         return {
             "step": self.step,
             "action": self.action.kind.value,
+            "click_modifier": self.action.click_modifier,
 
             "target": self.action.target_id,
             "target_name": self.target_name,
@@ -321,6 +324,10 @@ SCROLL_DIRECTIONS: tuple[str, ...] = ("UP", "DOWN", "LEFT", "RIGHT")
 # Keys a TYPE_TEXT decision may press right after entering its value
 # (``Decision.key``), e.g. to submit a search or path field or move to the next field.
 TYPE_TEXT_SUBMIT_KEYS: tuple[str, ...] = ("ENTER", "TAB")
+
+# Modifiers a CLICK may hold (``Decision.click_modifier``): MOD toggles the target in
+# a multi-selection (Cmd on macOS, Ctrl elsewhere); SHIFT extends a range to it.
+CLICK_MODIFIERS: tuple[str, ...] = ("MOD", "SHIFT")
 
 
 class StepEvent:

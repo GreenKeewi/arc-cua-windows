@@ -135,6 +135,13 @@ class MacOSAXBackend:
             raise StaleDesktopState("Target no longer exists")
 
         if action.kind == ActionKind.CLICK:
+            if action.click_modifier:
+                # AXPress ignores modifiers; a modified click must be a real mouse event.
+                bounds = _ax_bounds(AS, ref)
+                if bounds is None:
+                    raise UnsupportedDesktopAction("Modified click requires resolvable screen position")
+                _click_at(bounds, count=1, button="left", flags=modifier_flags((action.click_modifier,)))
+                return
             actions = _action_names(AS, ref)
             action_name = "AXPress" if "AXPress" in actions else "AXShowMenu" if "AXShowMenu" in actions else None
             if not action_name:
@@ -659,19 +666,24 @@ def _press_hotkey(hotkey: str) -> None:
     code = _KEYCODES.get(key)
     if code is None:
         raise UnsupportedDesktopAction(f"Unsupported macOS hotkey key: {key}")
+    _post_key(code, modifier_flags(modifiers))
+
+
+def modifier_flags(modifiers) -> int:
+    """Quartz event flags for arc-cua modifier names (MOD is Command on macOS)."""
+    Q = _quartz()
+    masks = {
+        "MOD": Q.kCGEventFlagMaskCommand,
+        "SHIFT": Q.kCGEventFlagMaskShift,
+        "ALT": Q.kCGEventFlagMaskAlternate,
+        "CTRL": Q.kCGEventFlagMaskControl,
+    }
     flags = 0
     for modifier in modifiers:
-        if modifier == "MOD":
-            flags |= Q.kCGEventFlagMaskCommand
-        elif modifier == "SHIFT":
-            flags |= Q.kCGEventFlagMaskShift
-        elif modifier == "ALT":
-            flags |= Q.kCGEventFlagMaskAlternate
-        elif modifier == "CTRL":
-            flags |= Q.kCGEventFlagMaskControl
-        else:
+        if modifier not in masks:
             raise UnsupportedDesktopAction(f"Unsupported macOS modifier: {modifier}")
-    _post_key(code, flags)
+        flags |= masks[modifier]
+    return flags
 
 
 def _scroll(direction: str) -> None:
@@ -709,7 +721,7 @@ def _ax_bounds(AS: Any, ref: Any) -> Bounds | None:
     return Bounds(x=x, y=y, width=w, height=h)
 
 
-def _click_at(bounds: Bounds, *, count: int, button: str) -> None:
+def _click_at(bounds: Bounds, *, count: int, button: str, flags: int = 0) -> None:
     Q = _quartz()
     point = bounds.center
     if button == "right":
@@ -728,6 +740,8 @@ def _click_at(bounds: Bounds, *, count: int, button: str) -> None:
         click_state = i + 1 if count > 1 else 1
         down = Q.CGEventCreateMouseEvent(None, down_type, point, mouse_button)
         up = Q.CGEventCreateMouseEvent(None, up_type, point, mouse_button)
+        Q.CGEventSetFlags(down, flags)
+        Q.CGEventSetFlags(up, flags)
         Q.CGEventSetIntegerValueField(down, Q.kCGMouseEventClickState, click_state)
         Q.CGEventSetIntegerValueField(up, Q.kCGMouseEventClickState, click_state)
         Q.CGEventPost(Q.kCGHIDEventTap, down)

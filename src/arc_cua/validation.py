@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .errors import InvalidDecision
-from .models import DEFAULT_HOTKEYS, TYPE_TEXT_SUBMIT_KEYS, ActionKind, Decision, DesktopSnapshot, ExecutableAction, Subtask
+from .models import CLICK_MODIFIERS, DEFAULT_HOTKEYS, TYPE_TEXT_SUBMIT_KEYS, ActionKind, Decision, DesktopSnapshot, ExecutableAction, Subtask
 
 _TARGETED = {
     ActionKind.CLICK,
@@ -62,6 +62,11 @@ def materialize_action(
 
     if kind == ActionKind.TYPE_TEXT and decision.key not in (None, *TYPE_TEXT_SUBMIT_KEYS):
         raise InvalidDecision(f"TYPE_TEXT cannot be followed by key {decision.key!r}")
+    if decision.click_modifier is not None:
+        if kind != ActionKind.CLICK:
+            raise InvalidDecision(f"{kind.value} does not take a click modifier")
+        if decision.click_modifier not in CLICK_MODIFIERS:
+            raise InvalidDecision(f"Unsupported click modifier: {decision.click_modifier!r}")
     if kind == ActionKind.PRESS_KEY and not decision.key:
         raise InvalidDecision("PRESS_KEY requires key")
     if kind == ActionKind.HOTKEY:
@@ -86,4 +91,5 @@ def materialize_action(
         scroll_direction=decision.scroll_direction,
         drag_dx=decision.drag_dx,
         drag_dy=decision.drag_dy,
+        click_modifier=decision.click_modifier,
     )

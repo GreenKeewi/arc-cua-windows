@@ -141,6 +141,8 @@ The macOS backend settles on a cheap visual probe: the frontmost window plus a s
 
 `TYPE_TEXT` can press `ENTER` or `TAB` right after entering its value (`Decision.key`), so a path, search or name field can be filled and submitted in one decision. The runtime waits for the typed value to settle before pressing the key, and the history records the key with the `TYPE_TEXT` action.
 
+`CLICK` can hold a selection modifier (`Decision.click_modifier`): `MOD` (Cmd on macOS) adds the target to or removes it from the current selection, and `SHIFT` extends a range to it. This lets one subtask select several specific items, for example files to copy or move together. On macOS a modified click is always a real mouse event at the element's center, because `AXPress` ignores modifiers.
+
 ### Terminal states
 
 | Status | Meaning |

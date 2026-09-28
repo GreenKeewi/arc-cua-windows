@@ -136,6 +136,9 @@ type_text_input:
 
 type_text_then_key:
   NONE / ENTER / TAB
+
+click_modifier:
+  NONE / MOD / SHIFT
 ```
 
 One JEV request can ask for the operation and speculative operation-specific choices in parallel. Only the head corresponding to the selected operation is consumed.

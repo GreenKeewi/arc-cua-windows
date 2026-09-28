@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 import httpx
 
 from ..models import (
+    CLICK_MODIFIERS,
     DEFAULT_HOTKEYS,
     DEFAULT_PRESS_KEYS,
     SCROLL_DIRECTIONS,
@@ -149,6 +150,11 @@ class TypeSafeJevPolicy:
             inputs = candidate_maps.get(f"{operation}_input", {})
             answer = _validate_choice(answers.get(f"{operation.lower()}_input", {}), set(inputs))
             kwargs["input_key"] = answer["choice"]
+
+        if kind == ActionKind.CLICK and "click_modifier" in candidate_maps:
+            answer = _validate_choice(answers.get("click_modifier", {}), set(candidate_maps["click_modifier"]))
+            if answer["choice"] != "NONE":
+                kwargs["click_modifier"] = answer["choice"]
 
         if kind == ActionKind.TYPE_TEXT and "type_text_then_key" in candidate_maps:
             answer = _validate_choice(answers.get("type_text_then_key", {}), set(candidate_maps["type_text_then_key"]))
@@ -300,6 +306,29 @@ class TypeSafeJevPolicy:
                         "rules": "Choose which agent-supplied input value this operation should use. Never invent a value.",
                     },
                 }
+
+        if ActionKind.CLICK.value in operations:
+            descriptions = {
+                "MOD": "Hold MOD (Cmd on macOS) to add the target to, or remove it from, the current selection.",
+                "SHIFT": "Hold SHIFT to extend the current selection to the target.",
+            }
+            candidate_maps["click_modifier"] = {
+                "NONE": "Ordinary click; replaces any current selection.",
+                **{modifier: descriptions[modifier] for modifier in CLICK_MODIFIERS},
+            }
+            questions["click_modifier"] = {
+                "type": "choice",
+                "criteria": candidate_maps["click_modifier"],
+                "instructions": {
+                    "operation": "CLICK",
+                    "rules": (
+                        "If CLICK is selected, choose whether to hold a modifier. Use MOD to select several "
+                        "specific items (click the first normally, then MOD-click each additional item). "
+                        "Use SHIFT only for a contiguous range. Choose NONE for ordinary clicks, buttons, "
+                        "and whenever the selection should be replaced."
+                    ),
+                },
+            }
 
         if ActionKind.TYPE_TEXT.value in operations and subtask.inputs:
             candidate_maps["type_text_then_key"] = {

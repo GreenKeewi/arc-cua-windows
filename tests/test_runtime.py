@@ -368,3 +368,46 @@ def test_type_text_rejects_non_submit_keys() -> None:
     decision = Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="query", key="ESCAPE")
     with pytest.raises(InvalidDecision, match="ESCAPE"):
         materialize_action(decision, snapshot({"value": ""}), task)
+
+
+def test_click_modifier_reaches_the_backend_and_history() -> None:
+    executed = []
+
+    def rows(state: dict) -> DesktopSnapshot:
+        return DesktopSnapshot(application="Files", window="Inbox", revision=str(state["selected"]), elements=tuple(
+            DesktopElement(id=f"row_{index}", role="row", name=f"Report {index}.pdf", actions=(ActionKind.CLICK,),
+                           selected=index in state["selected"], source="test")
+            for index in range(3)
+        ))
+
+    def click(state: dict, action) -> None:
+        executed.append(action.click_modifier)
+        index = int(action.target_id.split("_")[1])
+        state["selected"] = state["selected"] | {index} if action.click_modifier == "MOD" else {index}
+
+    backend = StateMachineBackend({"selected": set()}, rows, click)
+    policy = ScriptedPolicy([
+        Decision(kind=ActionKind.CLICK, target_id="row_0"),
+        Decision(kind=ActionKind.CLICK, target_id="row_2", click_modifier="MOD"),
+        Decision(terminal=TerminalKind.SUBTASK_COMPLETE),
+    ])
+    result = DesktopExecutor(backend, policy).run(Subtask(goal="Select", verification=("Selected",)))
+    assert executed == [None, "MOD"]
+    assert backend.state["selected"] == {0, 2}
+    assert [record.compact()["click_modifier"] for record in result.history] == [None, "MOD"]
+
+
+def test_click_modifier_is_only_valid_on_click() -> None:
+    import pytest
+
+    from arc_cua.errors import InvalidDecision
+    from arc_cua.validation import materialize_action
+
+    task = Subtask(goal="Search", verification=("Searched",), inputs={"query": "Blur"})
+    for decision, message in [
+        (Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="query", click_modifier="MOD"),
+         "does not take a click modifier"),
+        (Decision(kind=ActionKind.PRESS_KEY, key="ENTER", click_modifier="ALT"), "does not take a click modifier"),
+    ]:
+        with pytest.raises(InvalidDecision, match=message):
+            materialize_action(decision, snapshot({"value": ""}), task)
