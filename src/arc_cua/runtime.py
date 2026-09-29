@@ -119,10 +119,12 @@ class DesktopExecutor:
             # Let the entered value land (autocomplete, validation) before submitting it.
             if before_probe is not None:
                 before_probe = self._wait_for_quiet(before_probe)
-            self.backend.execute(
-                self.backend.observe(),  # the typed value changed the state
-                ExecutableAction(kind=ActionKind.PRESS_KEY, key=action.key),
-            )
+            submit = ExecutableAction(kind=ActionKind.PRESS_KEY, key=action.key)
+            try:
+                self.backend.execute(before, submit)
+            except StaleDesktopState:
+                # Backends that guard untargeted keys by revision need the typed state.
+                self.backend.execute(self.backend.observe(), submit)
         return before_probe
 
     def _observe_after_action(
@@ -280,6 +282,7 @@ class DesktopExecutor:
                         final_snapshot=snapshot,
                         history=tuple(history),
                         observations=_terminal_observations(decision.terminal, subtask),
+                        reason=decision.reason,
                     )
                 logger.debug("terminal step=%d status=%s", step, result.status.value)
                 yield StepEvent(step=step, snapshot=snapshot, decision=decision, result=result)

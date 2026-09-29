@@ -98,6 +98,7 @@ def test_json_payload_reaches_jev_and_selected_shortcut_executes() -> None:
         return httpx.Response(200, json={"answers": {
             "operation": choice_answer(questions["operation"]["criteria"], operation),
             "hotkey_value": choice_answer(questions["hotkey_value"]["criteria"], "MOD+S"),
+            "verification_0": choice_answer(questions["verification_0"]["criteria"], "SATISFIED"),
         }})
 
     backend = StateMachineBackend(
@@ -154,7 +155,7 @@ def test_macos_posts_one_chord_with_correct_modifiers(monkeypatch, chord, keycod
 
         @staticmethod
         def CGEventCreateKeyboardEvent(source, code, down):
-            return {"keycode": code, "down": down, "flags": 0}
+            return {"keycode": code, "down": down, "flags": 15}
 
         @staticmethod
         def CGEventSetFlags(event, modifiers):

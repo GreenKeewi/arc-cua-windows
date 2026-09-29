@@ -356,6 +356,7 @@ def test_type_text_submit_key_is_pressed_after_the_value() -> None:
     assert result.status == TerminalKind.SUBTASK_COMPLETE
     assert executed == [(ActionKind.TYPE_TEXT, "Blur", "ENTER"), (ActionKind.PRESS_KEY, None, "ENTER")]
     assert len(result.history) == 1
+    assert result.history[0].compact()["key"] == "ENTER"
 
 
 def test_type_text_rejects_non_submit_keys() -> None:
