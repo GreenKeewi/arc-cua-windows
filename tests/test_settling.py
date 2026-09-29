@@ -121,7 +121,9 @@ def test_visual_probe_tolerates_caret_sized_changes() -> None:
     moved = bytearray(base)
     moved[:500] = b"\xff" * 500  # a real content change
 
-    probe = lambda pixels, window_id=1: VisualProbe(10, window_id, (0.0, 0.0, 100.0, 100.0), bytes(pixels))
+    def probe(pixels, window_id=1):
+        return VisualProbe(10, window_id, (0.0, 0.0, 100.0, 100.0), bytes(pixels))
+
     assert probe(base) == probe(caret)
     assert probe(base) != probe(moved)
     assert probe(base) != probe(base, window_id=2)

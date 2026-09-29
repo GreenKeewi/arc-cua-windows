@@ -9,7 +9,6 @@ Grant your terminal/Python host Accessibility permission first.
 
 from arc_cua.backends import MacOSAXBackend
 
-
 backend = MacOSAXBackend()
 snapshot = backend.observe()
 print(f"{snapshot.application} — {snapshot.window} — {len(snapshot.elements)} elements")

@@ -34,3 +34,8 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Long lines here are model-facing prompt prose and demo document text.
+"src/arc_cua/policies/typesafe.py" = ["E501"]
+"examples/finder_preview/prepare.py" = ["E501"]

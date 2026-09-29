@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 from .errors import InvalidDecision
-from .models import CLICK_MODIFIERS, DEFAULT_HOTKEYS, TYPE_TEXT_SUBMIT_KEYS, ActionKind, Decision, DesktopSnapshot, ExecutableAction, Subtask
+from .models import (
+    CLICK_MODIFIERS,
+    DEFAULT_HOTKEYS,
+    TYPE_TEXT_SUBMIT_KEYS,
+    ActionKind,
+    Decision,
+    DesktopSnapshot,
+    ExecutableAction,
+    Subtask,
+)
 
 _TARGETED = {
     ActionKind.CLICK,

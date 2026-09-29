@@ -4,7 +4,6 @@ from arc_cua.backends import (
     MacOSHybridBackend,
 )
 
-
 print(
     "Switch to the app you want to inspect. "
     "Capturing in 4 seconds..."

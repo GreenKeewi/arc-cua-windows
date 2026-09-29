@@ -4,7 +4,6 @@ from arc_cua import DesktopExecutor, Subtask
 from arc_cua.backends import MacOSAXBackend
 from arc_cua.policies import TypeSafeJevPolicy
 
-
 print("Switch to Apple Calendar.")
 print("Starting in 5 seconds...")
 time.sleep(5)

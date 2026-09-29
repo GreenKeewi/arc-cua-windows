@@ -5,15 +5,12 @@ from arc_cua import (
     DesktopExecutor,
     Subtask,
 )
-
 from arc_cua.backends import (
     MacOSHybridBackend,
 )
-
 from arc_cua.policies import (
     TypeSafeJevPolicy,
 )
-
 
 # -------------------------
 # 1. Open System Settings
