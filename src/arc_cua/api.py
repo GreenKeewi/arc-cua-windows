@@ -8,17 +8,22 @@ from .runtime import DesktopExecutor
 
 def subtask_from_dict(payload: Mapping[str, Any]) -> Subtask:
     """Parse the stable agent-facing JSON/Python contract."""
+    if not isinstance(payload, Mapping):
+        raise ValueError("Subtask payload must be an object")
     allowed = {"goal", "verification", "inputs", "constraints", "max_actions", "metadata", "shortcuts"}
     unknown = set(payload) - allowed
     if unknown:
-        raise ValueError(f"Unknown subtask fields: {sorted(unknown)}")
+        raise ValueError(f"Unknown subtask fields: {sorted(map(str, unknown))}")
+    missing = {"goal", "verification"} - set(payload)
+    if missing:
+        raise ValueError(f"Missing required subtask fields: {sorted(missing)}")
     return Subtask(
-        goal=str(payload["goal"]),
-        verification=tuple(str(v) for v in payload["verification"]),
-        inputs=dict(payload.get("inputs", {})),
-        constraints=tuple(str(v) for v in payload.get("constraints", ())),
-        max_actions=int(payload.get("max_actions", 30)),
-        metadata=dict(payload.get("metadata", {})),
+        goal=payload["goal"],
+        verification=payload["verification"],
+        inputs=payload.get("inputs", {}),
+        constraints=payload.get("constraints", ()),
+        max_actions=payload.get("max_actions", 30),
+        metadata=payload.get("metadata", {}),
         shortcuts=payload.get("shortcuts", {}),
     )
 

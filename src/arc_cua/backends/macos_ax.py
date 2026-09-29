@@ -34,28 +34,42 @@ class MacOSAXBackend:
         self.max_elements = max_elements
         self.max_depth = max_depth
         self._refs: dict[str, Any] = {}
+        self._identities = _AXIdentityRegistry()
         self._pid: int | None = None
         self._require_accessibility()
 
     def register_ref(self, element_id: str, ref: Any) -> None:
         self._refs[element_id] = ref
 
+    def identity_for(self, ref: Any) -> str:
+        return self._identities.id_for(ref)
+
     def observe(self) -> DesktopSnapshot:
         AS, AppKit = _frameworks()
+        self._identities.begin_observation()
         app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
         if app is None:
             raise RuntimeError("No frontmost macOS application")
         pid = int(app.processIdentifier())
         app_name = str(app.localizedName() or f"pid:{pid}")
         app_ref = AS.AXUIElementCreateApplication(pid)
-        focused_window = _attr(AS, app_ref, "AXFocusedWindow")
-        root = focused_window or app_ref
+        focused = _attr(AS, app_ref, "AXFocusedUIElement")
+        root = (
+            _attr(AS, app_ref, "AXFocusedWindow")
+            or _attr(AS, app_ref, "AXMainWindow")
+            or (_attr(AS, focused, "AXWindow") if focused is not None else None)
+            or app_ref
+        )
         window_title = str(_attr(AS, root, "AXTitle") or app_name)
 
         refs: dict[str, Any] = {}
         elements: list[DesktopElement] = []
         visited: set[str] = set()
         self._walk(AS, root, elements, refs, visited, parent_id=None, depth=0)
+        # Inline editors may sit outside the main window's AX subtree. Falling
+        # back to the whole app also exposes hundreds of inactive menu items.
+        if focused is not None:
+            self._walk(AS, focused, elements, refs, visited, parent_id=None, depth=0)
         self._refs = refs
         self._pid = pid
         logger.debug("ax observe app=%r elements=%d", app_name, len(elements))
@@ -143,12 +157,15 @@ class MacOSAXBackend:
                 _click_at(bounds, count=1, button="left", flags=modifier_flags((action.click_modifier,)))
                 return
             actions = _action_names(AS, ref)
-            action_name = "AXPress" if "AXPress" in actions else "AXShowMenu" if "AXShowMenu" in actions else None
-            if not action_name:
-                raise UnsupportedDesktopAction("Target exposes no AXPress/AXShowMenu action")
-            error = AS.AXUIElementPerformAction(ref, action_name)
-            if error != 0:
-                raise UnsupportedDesktopAction(f"AX action {action_name} failed with error {error}")
+            if "AXPress" in actions:
+                error = AS.AXUIElementPerformAction(ref, "AXPress")
+                if error != 0:
+                    raise UnsupportedDesktopAction(f"AX action AXPress failed with error {error}")
+                return
+            bounds = _ax_bounds(AS, ref)
+            if bounds is None:
+                raise UnsupportedDesktopAction("Click requires AXPress or resolvable screen position")
+            _click_at(bounds, count=1, button="left")
             return
 
         if action.kind in {ActionKind.DOUBLE_CLICK, ActionKind.RIGHT_CLICK}:
@@ -173,6 +190,8 @@ class MacOSAXBackend:
                 raise UnsupportedDesktopAction(
                     "AXValue is not settable on this target"
                 )
+            if _attr(AS, ref, "AXRole") in _TEXT_ROLES and not _is_text_editor(AS, ref):
+                raise UnsupportedDesktopAction("Text target is a label; activate its editor before entering a value")
 
             if action.value is None:
                 raise UnsupportedDesktopAction(
@@ -216,20 +235,20 @@ class MacOSAXBackend:
     ) -> None:
         if depth > self.max_depth or len(elements) >= self.max_elements:
             return
-        ref_key = repr(ref)
-        if ref_key in visited:
+        element_id = self.identity_for(ref)
+        if element_id in visited:
             return
-        visited.add(ref_key)
+        visited.add(element_id)
 
-        element_id = _stable_id(ref)
-        element = self._element_from_ref(ref, element_id, parent_id=parent_id)
+        attributes = copy_attributes(AS, ref, _ELEMENT_ATTRIBUTES)
+        element = self._element_from_ref(ref, element_id, parent_id=parent_id, attributes=attributes)
         next_parent = parent_id
         if element is not None:
             elements.append(element)
             refs[element.id] = ref
             next_parent = element.id
 
-        children = _attr(AS, ref, "AXChildren") or []
+        children = (attributes.get("AXChildren") if attributes is not None else _attr(AS, ref, "AXChildren")) or []
         try:
             iterable = list(children)
         except TypeError:
@@ -239,40 +258,58 @@ class MacOSAXBackend:
                 break
             self._walk(AS, child, elements, refs, visited, parent_id=next_parent, depth=depth + 1)
 
-    def _element_from_ref(self, ref: Any, element_id: str, parent_id: str | None) -> DesktopElement | None:
+    def _element_from_ref(
+        self,
+        ref: Any,
+        element_id: str,
+        parent_id: str | None,
+        attributes: dict[str, Any] | None = None,
+    ) -> DesktopElement | None:
         AS, _ = _frameworks()
-        role = _attr(AS, ref, "AXRole")
+        if attributes is None:
+            attributes = copy_attributes(AS, ref, _ELEMENT_ATTRIBUTES)
+        batched = attributes is not None
+        if not batched:  # batch read unsupported: one IPC call per attribute
+            attributes = {name: _attr(AS, ref, name) for name in _ELEMENT_ATTRIBUTES}
+        get = attributes.get
+        role = get("AXRole")
         if not role:
             return None
         role = str(role)
-        title = _attr(AS, ref, "AXTitle")
-        description = _attr(AS, ref, "AXDescription")
-        label = _attr(AS, ref, "AXLabel")
-        help_text = _attr(AS, ref, "AXHelp")
+        title = get("AXTitle")
+        description = get("AXDescription")
+        label = get("AXLabel")
+        help_text = get("AXHelp")
         name = next((str(v) for v in (title, label, description, help_text) if v not in (None, "")), "")
-        raw_value = _attr(AS, ref, "AXValue")
+        raw_value = get("AXValue")
         value = _coerce_value(raw_value)
-        enabled = _attr(AS, ref, "AXEnabled")
-        focused = _attr(AS, ref, "AXFocused")
-        selected = _attr(AS, ref, "AXSelected")
-        expanded = _attr(AS, ref, "AXExpanded")
-        identifier = _attr(AS, ref, "AXIdentifier")
+        enabled = get("AXEnabled")
+        focused = get("AXFocused")
+        selected = get("AXSelected")
+        expanded = get("AXExpanded")
+        identifier = get("AXIdentifier")
         action_names = _action_names(AS, ref)
+        bounds = _bounds_from_values(AS, get("AXPosition"), get("AXSize")) if batched else _ax_bounds(AS, ref)
 
         capabilities: list[ActionKind] = []
-        if "AXPress" in action_names or "AXShowMenu" in action_names:
+        if "AXPress" in action_names or (bounds is not None and (role in _TEXT_ROLES or "AXOpen" in action_names)):
             capabilities.append(ActionKind.CLICK)
+        if "AXOpen" in action_names and bounds is not None:
+            capabilities.append(ActionKind.DOUBLE_CLICK)
+        if "AXShowMenu" in action_names and bounds is not None:
+            capabilities.append(ActionKind.RIGHT_CLICK)
         settable = False
         try:
             error, settable = AS.AXUIElementIsAttributeSettable(ref, "AXValue", None)
             settable = error == 0 and bool(settable)
         except Exception:
             settable = False
-        if settable and role in _TEXT_ROLES:
+        text_editor = role in _TEXT_ROLES and _is_text_editor(AS, ref)
+        if settable and text_editor:
             capabilities.append(ActionKind.TYPE_TEXT)
 
         # Capability comes from AX itself, not a hard-coded role allowlist.
-        if settable:
+        if settable and (role not in _TEXT_ROLES or text_editor):
             capabilities.append(ActionKind.SET_VALUE)
 
         # Ignore anonymous containers with no useful action/state. Their children are
@@ -292,9 +329,18 @@ class MacOSAXBackend:
 
         if settable:
             metadata["ax_value_settable"] = True
+        if role in _TEXT_ROLES:
+            metadata["text_editable"] = text_editor
 
         if identifier:
             metadata["identifier"] = str(identifier)
+        url = get("AXURL")
+        if url is not None:
+            # File-reference URLs are opaque IDs; NSURL can resolve the path
+            # represented by that same accessible item without reading its data.
+            if hasattr(url, "isFileURL") and url.isFileURL():
+                url = url.filePathURL() or url
+            metadata["url"] = str(url)
         if help_text and str(help_text) != name:
             metadata["help"] = str(help_text)[:300]
 
@@ -310,6 +356,7 @@ class MacOSAXBackend:
             selected=None if selected is None else bool(selected),
             expanded=None if expanded is None else bool(expanded),
             parent_id=parent_id,
+            bounds=bounds,
             source="macos_ax",
             metadata=metadata,
         )
@@ -340,6 +387,39 @@ def _frameworks() -> tuple[Any, Any]:
     return AS, AppKit
 
 
+_ELEMENT_ATTRIBUTES = (
+    "AXRole", "AXTitle", "AXDescription", "AXLabel", "AXHelp", "AXValue", "AXEnabled", "AXFocused",
+    "AXSelected", "AXExpanded", "AXIdentifier", "AXURL", "AXPosition", "AXSize", "AXChildren",
+)
+
+
+def copy_attributes(AS: Any, ref: Any, names: tuple[str, ...]) -> dict[str, Any] | None:
+    """Read several attributes in one cross-process call; None if unsupported.
+
+    Each AX attribute read is an IPC round trip to the target app, so reading
+    them one at a time dominated observation. Missing attributes come back as
+    AXValue error placeholders and are mapped to None.
+    """
+    try:
+        error, values = AS.AXUIElementCopyMultipleAttributeValues(ref, list(names), 0, None)
+    except Exception:
+        return None
+    if error != 0 or values is None or len(values) != len(names):
+        return None
+    CF = _core_foundation()
+    ax_value_type = AS.AXValueGetTypeID()
+    result: dict[str, Any] = {}
+    for name, value in zip(names, values):
+        if (
+            value is not None
+            and CF.CFGetTypeID(value) == ax_value_type
+            and AS.AXValueGetType(value) == AS.kAXValueAXErrorType
+        ):
+            value = None
+        result[name] = value
+    return result
+
+
 def _attr(AS: Any, ref: Any, name: str) -> Any:
     try:
         error, value = AS.AXUIElementCopyAttributeValue(ref, name, None)
@@ -358,8 +438,58 @@ def _action_names(AS: Any, ref: Any) -> set[str]:
     return {str(name) for name in names}
 
 
-def _stable_id(ref: Any) -> str:
-    return "ax_" + hashlib.sha1(repr(ref).encode()).hexdigest()[:14]
+def _is_text_editor(AS: Any, ref: Any) -> bool:
+    # Item labels can claim a writable AXValue without committing edits to the
+    # underlying item. Require focus or text-selection support as well.
+    if _attr(AS, ref, "AXFocused"):
+        return True
+    for attribute in ("AXFocused", "AXSelectedTextRange"):
+        try:
+            error, settable = AS.AXUIElementIsAttributeSettable(ref, attribute, None)
+            if error == 0 and settable:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+class _AXIdentityRegistry:
+    """Identify remote AX objects, not their temporary Python/CF wrappers.
+
+    Keep the previous observation's references until the next traversal finishes.
+    CFEqual resolves hash collisions; IDs are never recycled within a session.
+    """
+
+    def __init__(self) -> None:
+        self._buckets: dict[int, list[tuple[Any, str]]] = {}
+        self._seen: set[str] = set()
+        self._next_id = 0
+
+    def begin_observation(self) -> None:
+        self._buckets = {
+            key: retained for key, entries in self._buckets.items()
+            if (retained := [(ref, identity) for ref, identity in entries if identity in self._seen])
+        }
+        self._seen.clear()
+
+    def id_for(self, ref: Any) -> str:
+        CF = _core_foundation()
+        entries = self._buckets.setdefault(int(CF.CFHash(ref)), [])
+        for previous, identity in entries:
+            if CF.CFEqual(previous, ref):
+                self._seen.add(identity)
+                return identity
+        self._next_id += 1
+        identity = f"ax_{self._next_id}"
+        entries.append((ref, identity))
+        self._seen.add(identity)
+        return identity
+
+
+def _core_foundation() -> Any:
+    import CoreFoundation  # type: ignore
+
+    return CoreFoundation
 
 
 def _ax_value_kind(
@@ -368,9 +498,7 @@ def _ax_value_kind(
     if value is None:
         return None
 
-    if hasattr(value, "timeIntervalSince1970"):
-        return "date_time"
-
+    # Plain types first: a missed attribute lookup on a PyObjC object is slow.
     if isinstance(value, bool):
         return "boolean"
 
@@ -382,6 +510,9 @@ def _ax_value_kind(
 
     if isinstance(value, str):
         return "text"
+
+    if hasattr(value, "timeIntervalSince1970"):
+        return "date_time"
 
     return type(value).__name__
 
@@ -543,7 +674,7 @@ def _coerce_value(value: Any) -> str | int | float | bool | None:
         return value
     # AXValue/attributed objects are not useful to the policy as opaque Python refs.
     text = str(value)
-    return text if len(text) <= 300 and not text.startswith("<AXValue") else None
+    return text if len(text) <= 300 and not text.startswith("<AX") else None
 
 
 def _quartz() -> Any:
@@ -645,8 +776,7 @@ def _post_key(code: int, flags: int = 0) -> None:
     Q = _quartz()
     for down in (True, False):
         event = Q.CGEventCreateKeyboardEvent(None, code, down)
-        if flags:
-            Q.CGEventSetFlags(event, flags)
+        Q.CGEventSetFlags(event, flags)
         Q.CGEventPost(Q.kCGHIDEventTap, event)
 
 
@@ -662,7 +792,6 @@ def _press_hotkey(hotkey: str) -> None:
         modifiers, key = parse_hotkey(hotkey)
     except ValueError as exc:
         raise UnsupportedDesktopAction(str(exc)) from exc
-    Q = _quartz()
     code = _KEYCODES.get(key)
     if code is None:
         raise UnsupportedDesktopAction(f"Unsupported macOS hotkey key: {key}")
@@ -705,15 +834,21 @@ def _scroll(direction: str) -> None:
 
 
 def _ax_bounds(AS: Any, ref: Any) -> Bounds | None:
-    pos = _attr(AS, ref, "AXPosition")
-    size = _attr(AS, ref, "AXSize")
+    return _bounds_from_values(AS, _attr(AS, ref, "AXPosition"), _attr(AS, ref, "AXSize"))
+
+
+def _bounds_from_values(AS: Any, pos: Any, size: Any) -> Bounds | None:
     if pos is None or size is None:
         return None
     try:
-        x = float(pos.x)
-        y = float(pos.y)
-        w = float(size.width)
-        h = float(size.height)
+        position_ok, point = AS.AXValueGetValue(pos, AS.kAXValueCGPointType, None)
+        size_ok, dimensions = AS.AXValueGetValue(size, AS.kAXValueCGSizeType, None)
+        if not position_ok or not size_ok:
+            return None
+        x = float(point.x)
+        y = float(point.y)
+        w = float(dimensions.width)
+        h = float(dimensions.height)
     except (AttributeError, TypeError, ValueError):
         return None
     if w <= 0 or h <= 0:
@@ -734,6 +869,7 @@ def _click_at(bounds: Bounds, *, count: int, button: str, flags: int = 0) -> Non
         up_type = Q.kCGEventLeftMouseUp
 
     move = Q.CGEventCreateMouseEvent(None, Q.kCGEventMouseMoved, point, mouse_button)
+    Q.CGEventSetFlags(move, 0)
     Q.CGEventPost(Q.kCGHIDEventTap, move)
 
     for i in range(count):

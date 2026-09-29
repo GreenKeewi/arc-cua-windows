@@ -19,7 +19,8 @@ from ..models import (
     DesktopSnapshot,
     ExecutableAction,
 )
-from .macos_ax import MacOSAXBackend, modifier_flags
+from .macos_ax import MacOSAXBackend, copy_attributes, modifier_flags
+from .macos_events import AXEventMonitor
 from .macos_ocr import MacOSOCRProvider, window_thumbnail
 
 logger = logging.getLogger(__name__)
@@ -27,16 +28,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True, eq=False)
 class VisualProbe:
-    """Cheap settle probe: frontmost window identity plus a small thumbnail.
+    """Cheap settle probe: frontmost window, a small thumbnail, and an AX event count.
 
-    Two probes are equal when the window is the same and almost no thumbnail
-    pixels changed noticeably, so a blinking caret does not count as activity.
+    Two probes are equal when the window is the same, no accessibility
+    notification arrived in between, and almost no thumbnail pixels changed
+    noticeably, so a blinking caret does not count as activity.
     """
 
     pid: int | None
     window_id: int | None
     bounds: tuple[float, float, float, float] | None
     pixels: bytes
+    ax_events: int = 0
 
     PIXEL_DELTA = 24
     MAX_CHANGED_FRACTION = 0.002
@@ -44,7 +47,9 @@ class VisualProbe:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, VisualProbe):
             return NotImplemented
-        if (self.pid, self.window_id, self.bounds) != (other.pid, other.window_id, other.bounds):
+        if (self.pid, self.window_id, self.bounds, self.ax_events) != (
+            other.pid, other.window_id, other.bounds, other.ax_events
+        ):
             return False
         if len(self.pixels) != len(other.pixels):
             return False
@@ -105,6 +110,8 @@ class MacOSHybridBackend:
             str,
             DesktopElement,
         ] = {}
+
+        self._ax_events = AXEventMonitor()
 
     def observe(
         self,
@@ -263,19 +270,25 @@ class MacOSHybridBackend:
         """Lightweight signal for post-action settling (no AX walk, no OCR)."""
 
         pid = self.ocr.frontmost_pid()
+        events = (
+            self._ax_events.count
+            if pid is not None and self._ax_events.watch(pid)
+            else 0
+        )
         window = (
             self.ocr.front_window(pid)
             if pid is not None
             else None
         )
         if window is None:
-            return VisualProbe(pid, None, None, b"")
+            return VisualProbe(pid, None, None, b"", events)
         bounds = window.bounds
         return VisualProbe(
             pid,
             window.window_id,
             (bounds.x, bounds.y, bounds.width, bounds.height),
             window_thumbnail(bounds),
+            events,
         )
 
     def is_fresh(
@@ -790,9 +803,47 @@ def _ax_children(
     return children
 
 
+_MODAL_ROLES = {
+    "AXSheet",
+    "AXDialog",
+    "AXPopover",
+}
+
+
+def _ax_modal_node(
+    AX: Any,
+    element: Any,
+) -> tuple[bool, list[Any]]:
+    """Modal flag and children of one node, in a single AX call when possible."""
+
+    attributes = copy_attributes(
+        AX,
+        element,
+        ("AXRole", "AXModal", "AXSheets", "AXChildren"),
+    )
+
+    if attributes is None:
+        return (
+            _ax_is_modal(AX, element),
+            _ax_children(AX, element),
+        )
+
+    is_modal = (
+        str(attributes["AXRole"] or "") in _MODAL_ROLES
+        or bool(attributes["AXModal"])
+    )
+
+    return (
+        is_modal,
+        _ax_values(attributes["AXSheets"])
+        + _ax_values(attributes["AXChildren"]),
+    )
+
+
 def _find_modal_roots(
     AX: Any,
     app: Any,
+    identity_for: Any,
 ) -> list[Any]:
     seeds: list[
         tuple[Any, int]
@@ -843,9 +894,7 @@ def _find_modal_roots(
         element, depth = queue.popleft()
         seen += 1
 
-        key = repr(
-            element
-        )
+        key = identity_for(element)
 
         if key in visited:
             continue
@@ -854,10 +903,12 @@ def _find_modal_roots(
             key
         )
 
-        if _ax_is_modal(
+        is_modal, children = _ax_modal_node(
             AX,
             element,
-        ):
+        )
+
+        if is_modal:
             roots.append(
                 element
             )
@@ -866,10 +917,7 @@ def _find_modal_roots(
         if depth >= max_depth:
             continue
 
-        for child in _ax_children(
-            AX,
-            element,
-        ):
+        for child in children:
             queue.append(
                 (
                     child,
@@ -881,9 +929,7 @@ def _find_modal_roots(
     seen_keys: set[str] = set()
 
     for root in roots:
-        key = repr(
-            root
-        )
+        key = identity_for(root)
 
         if key in seen_keys:
             continue
@@ -896,17 +942,6 @@ def _find_modal_roots(
         )
 
     return unique
-
-
-def _modal_element_id(
-    ref: Any,
-) -> str:
-    return (
-        "ax_modal_"
-        + hashlib.sha1(
-            repr(ref).encode()
-        ).hexdigest()[:14]
-    )
 
 
 def _collect_modal_ax_elements(
@@ -928,6 +963,7 @@ def _collect_modal_ax_elements(
     roots = _find_modal_roots(
         AX,
         app,
+        ax_backend.identity_for,
     )
 
     if not roots:
@@ -974,19 +1010,13 @@ def _collect_modal_ax_elements(
             is_root,
         ) = queue.popleft()
 
-        ref_key = repr(
-            ref
-        )
+        element_id = ax_backend.identity_for(ref)
 
-        if ref_key in visited:
+        if element_id in visited:
             continue
 
         visited.add(
-            ref_key
-        )
-
-        element_id = _modal_element_id(
-            ref
+            element_id
         )
 
         try:
@@ -1324,4 +1354,3 @@ def _bounds_payload(
             1,
         ),
     }
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from hashlib import sha256
@@ -102,6 +103,7 @@ class DesktopElement:
             "expanded": self.expanded,
             "parent_id": self.parent_id,
             "source": self.source,
+            "url": self.metadata.get("url"),
         }
         return sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:20]
 
@@ -152,12 +154,31 @@ class Subtask:
     shortcuts: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.goal.strip():
-            raise ValueError("Subtask.goal cannot be empty")
-        if not self.verification:
-            raise ValueError("Subtask.verification must contain agent-defined criteria")
-        if self.max_actions < 1:
-            raise ValueError("Subtask.max_actions must be >= 1")
+        if not isinstance(self.goal, str) or not self.goal.strip():
+            raise ValueError("Subtask.goal must be a non-empty string")
+        for name in ("verification", "constraints"):
+            values = getattr(self, name)
+            if not isinstance(values, (list, tuple)):
+                raise ValueError(f"Subtask.{name} must be an array of strings, not {type(values).__name__}")
+            if name == "verification" and not values:
+                raise ValueError("Subtask.verification must contain at least one agent-defined criterion")
+            for index, value in enumerate(values):
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"Subtask.{name}[{index}] must be a non-empty string")
+            object.__setattr__(self, name, tuple(values))
+        if type(self.max_actions) is not int or self.max_actions < 1:
+            raise ValueError("Subtask.max_actions must be an integer >= 1")
+        if not isinstance(self.inputs, Mapping):
+            raise ValueError("Subtask.inputs must be an object mapping names to literal scalar values")
+        inputs = dict(self.inputs)
+        for key, value in inputs.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("Subtask.inputs keys must be non-empty strings")
+            if type(value) not in (str, int, float, bool) or (isinstance(value, float) and not math.isfinite(value)):
+                raise ValueError(f"Subtask.inputs[{key!r}] must be a string, finite number, or boolean")
+        object.__setattr__(self, "inputs", MappingProxyType(inputs))
+        if not isinstance(self.metadata, Mapping):
+            raise ValueError("Subtask.metadata must be an object")
         if not isinstance(self.shortcuts, Mapping):
             raise ValueError("Subtask.shortcuts must map keyboard chords to descriptions")
         shortcuts = dict(self.shortcuts)
@@ -199,6 +220,7 @@ class Decision:
     confidence: float | None = None
     latency_ms: int | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
+    reason: str | None = None
 
     def __post_init__(self) -> None:
         if (self.kind is None) == (self.terminal is None):
@@ -256,7 +278,10 @@ class ActionRecord:
         return {
             "step": self.step,
             "action": self.action.kind.value,
+            "key": self.action.key,
+            "hotkey": self.action.hotkey,
             "click_modifier": self.action.click_modifier,
+            "scroll_direction": self.action.scroll_direction,
 
             "target": self.action.target_id,
             "target_name": self.target_name,
