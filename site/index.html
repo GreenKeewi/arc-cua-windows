@@ -548,6 +548,7 @@ assert result.status == TerminalKind.SUBTASK_COMPLETE</code></pre>
       </tbody>
     </table>
   </div>
+  <p>The JEV policy checks each verification criterion separately. A proposed completion becomes <code>NEEDS_AGENT</code> with a reason if any criterion is contradicted or cannot be established. These are model judgements; use <code>RuntimeConfig.verify</code> or caller-side validation for an independent check.</p>
 </section>
 
 <section id="api">
@@ -698,6 +699,9 @@ executor.cancel()                     # Thread-safe stop signal</code></pre>
 
   <div class="api-block">
     <h3>JSON boundary</h3>
+    <p><code>goal</code> must be a non-empty string. <code>verification</code> must be a non-empty array of non-empty strings, and <code>constraints</code> must be an array of non-empty strings. Even one criterion needs an array: <code>"verification": ["The folder exists"]</code>. Bare strings are rejected before a provider request.</p>
+    <p><code>inputs</code> maps names to literal strings, finite numbers, or booleans. Supply every value that needs to be typed here. <code>max_actions</code> must be a positive integer; <code>metadata</code> and <code>shortcuts</code> must be objects. Invalid fields raise descriptive errors without silent type conversion. Use uppercase chords such as <code>MOD+SHIFT+N</code>; unmodified Return is the built-in key <code>ENTER</code>.</p>
+    <p>JEV requests share one element table and subtask across questions. Target choices reference observed IDs, preserving the element facts and available choices while reducing repeated data. Provider token-limit failures report <code>max_tokens_exceeded</code> without executing an action.</p>
     <p>Three functions for the agent-facing JSON contract:</p>
     <pre><code># Parse agent payload into Subtask
 task = subtask_from_dict({

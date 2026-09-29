@@ -124,6 +124,31 @@ Chords use uppercase key names and one or more `MOD`, `CTRL`, `ALT`, or `SHIFT` 
 
 Malformed declarations fail when the subtask is created. JEV can choose only offered chords; runtime validation also rejects hotkeys outside the defaults and the current subtask's declarations, including decisions from custom policies.
 
+### JSON field types
+
+The JSON API validates the same contract as `Subtask` before calling the policy:
+
+| Field | JSON type |
+|---|---|
+| `goal` | Non-empty string (required) |
+| `verification` | Non-empty array of non-empty strings (required) |
+| `constraints` | Array of non-empty strings; defaults to `[]` |
+| `inputs` | Object mapping non-empty names to literal strings, finite numbers, or booleans |
+| `max_actions` | Integer at least 1; defaults to 30 |
+| `shortcuts` | Object mapping uppercase chords to non-empty descriptions |
+| `metadata` | Object; defaults to `{}` |
+
+For example, use `"verification": ["The folder exists"]`, even for one criterion.
+A bare string is rejected rather than split into characters. The Python API accepts
+lists or tuples for criteria and constraints, and copies them into tuples. Input
+literals are copied into an immutable mapping. Invalid values raise a field-specific
+`ValueError`; values are not silently converted from strings to numbers or arrays.
+
+Supply each folder name, filename, or path to be typed as a literal in `inputs`.
+Text mentioned only in `goal` cannot be invented as an input by JEV.
+Use `MOD+SHIFT+N`, not `Command+Shift+N`; an unmodified Return is the built-in
+`PRESS_KEY` value `ENTER`, not an extra hotkey.
+
 ### Hybrid macOS perception
 
 `arc-cua` combines two local perception sources:
@@ -132,6 +157,12 @@ Malformed declarations fail when the subtask is created. JEV can choose only off
 - **Apple Vision OCR** — visible screen text with bounding boxes, for apps with incomplete accessibility
 
 Both normalize into `DesktopElement`s that JEV reasons over. JEV receives structured elements and IDs, not screenshots.
+
+The provider request stores element facts once in a shared table. Target choices
+refer to those observed IDs, and all questions share the same subtask. This reduces
+repeated request data without discarding element facts or changing the offered choices.
+Provider token-limit failures include `max_tokens_exceeded` in the returned error;
+no UI action is executed for a failed decision request.
 
 ### Runtime-owned settling
 
@@ -152,6 +183,12 @@ The macOS backend settles on a cheap visual probe: the frontmost window plus a s
 | `NEEDS_AGENT` | Higher-level reasoning required or action budget reached |
 
 The caller owns overall task completion.
+
+The JEV policy checks each supplied verification criterion in a separate choice
+head. A proposed completion becomes `NEEDS_AGENT` with a reason if any criterion
+is contradicted or cannot be established. These checks are model judgements;
+use `RuntimeConfig.verify` or caller-side validation when completion needs an
+independent check.
 
 ---
 

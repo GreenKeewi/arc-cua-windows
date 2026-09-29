@@ -143,9 +143,12 @@ The upstream agent creates a Subtask that defines:
 | shortcuts | Mapping[str, str] | Extra keyboard chords and descriptions for this subtask (default empty) |
 
 Validation:
-- goal cannot be empty
-- verification must have at least one criterion
-- max_actions must be >= 1
+- goal must be a non-empty string
+- verification must be a non-empty array of non-empty strings; constraints must be an array of non-empty strings
+- Python lists/tuples are copied into tuples; bare strings are rejected, never split into characters
+- inputs must map non-empty names to literal strings, finite numbers, or booleans; this mapping is copied and frozen
+- max_actions must be an integer >= 1, not a numeric string or boolean
+- metadata must be an object
 - shortcuts must map valid uppercase chords to non-empty descriptions
 
 Example: `shortcuts={"MOD+S": "Save the current document"}`. These are added to the existing HOTKEY choices for this subtask only. Matching defaults can be given a contextual description. JEV receives chord IDs and descriptions and chooses one offered chord. Runtime validation rejects undeclared non-default hotkeys, including those emitted by custom policies.
@@ -204,6 +207,11 @@ UI operations the executor can perform:
 | SUBTASK_COMPLETE | Verification criteria appear satisfied |
 | BLOCKED | Cannot make progress with available operations |
 | NEEDS_AGENT | Higher-level reasoning required or action budget reached |
+
+TypeSafeJevPolicy asks a separate choice head for each verification criterion.
+A proposed SUBTASK_COMPLETE becomes NEEDS_AGENT, with an explanatory reason, if
+any criterion is NOT_SATISFIED or UNKNOWN. These are model judgements, not an
+independent proof; callers can inspect the result and supply RuntimeConfig.verify.
 
 ### Bounds
 
@@ -293,6 +301,7 @@ class Decision:
     confidence: float | None = None
     latency_ms: int | None = None
     raw: Mapping[str, Any] = {}  # Raw policy response for debugging
+    reason: str | None = None   # Preserved in terminal execution results
 ```
 
 ### ExecutableAction
@@ -454,7 +463,7 @@ Termination conditions:
 def subtask_from_dict(payload: Mapping[str, Any]) -> Subtask
 ```
 
-Parse a dict into a Subtask. Accepted keys: goal, verification, inputs, constraints, max_actions, metadata, shortcuts. Raises ValueError on unknown fields or invalid shortcut declarations.
+Parse a dict into a Subtask. Accepted keys: goal, verification, inputs, constraints, max_actions, metadata, shortcuts. Raises a field-specific ValueError on missing required fields, unknown fields, invalid types, or invalid shortcut declarations. No scalar-to-array or string-to-number coercion occurs. Even one criterion needs an array, for example {"goal": "Create Review", "inputs": {"folder_name": "Review"}, "verification": ["Review exists"], "constraints": ["Preserve existing files"], "max_actions": 12, "shortcuts": {"MOD+SHIFT+N": "Create a new folder"}}. Each text value to be typed must be supplied in inputs; goal text alone is insufficient. Return is the built-in PRESS_KEY value ENTER; it is not an unmodified hotkey.
 
 ### result_to_dict
 
@@ -524,6 +533,18 @@ backend = MacOSAXBackend(max_elements=1200, max_depth=18)
 
 Pure Accessibility backend. Traverses the AX tree of the frontmost application. Supports CLICK, DOUBLE_CLICK, RIGHT_CLICK, TYPE_TEXT, SET_VALUE, PRESS_KEY, HOTKEY, SCROLL.
 
+AX element IDs use Core Foundation equality and hashing, with collision handling,
+across normal and modal traversals. The observer uses the main window as a fallback
+and separately includes inline editors; it avoids traversing inactive menus when
+the focused window is temporarily absent. AXValue geometry is decoded for pointer
+actions. AXShowMenu is not treated as an ordinary left click.
+
+Writable item labels are distinguished from text editors using focus and editable
+selection capabilities. Only real text editors expose text-entry actions; committing
+an edit remains a separate policy-selected action. Accessible item URLs are included
+in metadata and freshness checks. Recent action history includes concrete keys,
+hotkeys, and scroll directions.
+
 Methods:
 - `register_ref(element_id, ref)` — Register an AX reference for an element (used by hybrid backend)
 
@@ -551,6 +572,13 @@ Deterministic backend for tests and demos. You define:
 ## Policies
 
 ### TypeSafeJevPolicy
+
+Provider requests store compact element facts once as rows in state.desktop.elements,
+with field names in state.desktop.element_columns. Null/omitted trailing columns
+mean absent. Target choices reference those observed IDs and all heads share
+state.subtask. This removes repeated facts without dropping observed elements or
+altering candidate IDs. Public snapshots/traces keep the ordinary object format.
+Provider token-limit errors include max_tokens_exceeded and execute no UI action.
 
 ```python
 from arc_cua.policies import TypeSafeJevPolicy
