@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Trip planner</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  .sr { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  #suggestions div { padding: 4px; cursor: pointer; }
+  #banner { position: fixed; left: 0; right: 0; bottom: 0; height: 90px; background: #222; color: #fff; padding: 12px; }
+  #filler { height: 1400px; }
+  .card { cursor: pointer; border: 1px solid #ccc; padding: 8px; display: inline-block; }
+</style>
+</head>
+<body>
+<h1>Plan a trip</h1>
+<p>Search for a city, choose a class, then search.</p>
+
+<label for="city">Destination</label>
+<input id="city" autocomplete="off" placeholder="City">
+<div id="suggestions" role="listbox"></div>
+
+<label for="cabin">Cabin</label>
+<select id="cabin">
+  <option value="eco">Economy</option>
+  <option value="biz">Business</option>
+  <option value="first">First</option>
+</select>
+
+<label><input type="checkbox" id="flex" class="sr"><span>Flexible dates</span></label>
+
+<button id="search">Search</button>
+<button id="reset" onclick="if (confirm('Clear the form?')) { city.value=''; result.textContent='Cleared'; }">Reset</button>
+<a href="details.html" target="_blank">Travel details</a>
+
+<div class="card" id="card" onclick="result.textContent='Card opened'">Weekend deals</div>
+<fancy-button></fancy-button>
+<iframe src="frame.html" width="300" height="80"></iframe>
+
+<p id="result" role="status"></p>
+<div id="filler"></div>
+<button id="bottom" onclick="result.textContent='Bottom reached'">Bottom button</button>
+<div id="banner">We use cookies. <button onclick="banner.remove()">Accept cookies</button><button id="hidden-behind">Behind</button></div>
+
+<script>
+  const cities = ["Zurich", "Zagreb", "London", "Lisbon"];
+  city.addEventListener("input", () => {
+    setTimeout(() => {
+      suggestions.innerHTML = "";
+      for (const name of cities.filter((c) => city.value && c.toLowerCase().startsWith(city.value.toLowerCase().slice(0, 2)))) {
+        const option = document.createElement("div");
+        option.setAttribute("role", "option");
+        option.textContent = name;
+        option.onclick = () => { city.value = name; suggestions.innerHTML = ""; };
+        suggestions.append(option);
+      }
+    }, 120);
+  });
+  search.onclick = () => {
+    result.textContent = `Results for ${city.value} in ${cabin.options[cabin.selectedIndex].text}` + (flex.checked ? " (flexible)" : "");
+  };
+  customElements.define("fancy-button", class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" }).innerHTML = "<button>Shadow action</button>";
+      this.shadowRoot.querySelector("button").onclick = () => { result.textContent = "Shadow clicked"; };
+    }
+  });
+</script>
+</body>
+</html>

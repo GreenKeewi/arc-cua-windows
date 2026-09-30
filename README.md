@@ -182,6 +182,45 @@ repeated request data without discarding element facts or changing the offered c
 Provider token-limit failures include `max_tokens_exceeded` in the returned error;
 no UI action is executed for a failed decision request.
 
+### Browser (Chrome)
+
+`ChromeBackend` runs the same loop in a Chrome tab, on macOS, Linux and Windows. It
+reads the page's DOM in one script call and acts through the Chrome DevTools
+protocol, so the real pointer and keyboard focus are untouched and the window can
+stay in the background.
+
+```python
+from arc_cua import DesktopExecutor, Subtask
+from arc_cua.backends import ChromeBackend
+from arc_cua.policies import TypeSafeJevPolicy
+
+with ChromeBackend.launch("https://en.wikipedia.org") as backend:
+    result = DesktopExecutor(backend, TypeSafeJevPolicy()).run(Subtask(
+        goal="Open the Wikipedia article about Gödel's incompleteness theorems",
+        inputs={"query": "Gödel's incompleteness theorems"},
+        verification=("The article titled Gödel's incompleteness theorems is open",),
+    ))
+```
+
+- **Elements** are the controls and text visible in the viewport, with roles,
+  accessible names, values and states. Open shadow roots and same-origin iframes
+  are included. `SCROLL` reveals more; `context["more_below"]` says whether there is more.
+- **Covered controls**, such as a button behind a cookie banner, are listed without
+  actions until they can actually receive a click.
+- **Native dropdowns, sliders and date inputs** use `SET_VALUE` with an
+  agent-supplied input. A `<select>` lists its options in `metadata["options"]`.
+- **JavaScript dialogs** (`alert`, `confirm`) appear as a dialog with OK and
+  Cancel buttons. Links that open a new tab switch the backend to that tab.
+- **Speed.** Observing a 4,761-node Wikipedia article takes about 9 ms, and the
+  settle probe about 0.5 ms. JEV opened that article from the main page in 3.1 s
+  with two decisions.
+
+`ChromeBackend.launch()` starts Chrome with a temporary profile; `connect()` opens a
+new tab in a Chrome started with `--remote-debugging-port`. `navigate(url)` is for
+the caller; the decision model has no address bar. Cross-origin iframes, closed
+shadow roots, file uploads, drag and drop, and browser UI (address bar, find bar,
+extensions) are not reachable.
+
 ### Runtime-owned settling
 
 After a mutating action, `arc-cua` waits until the desktop has reacted and gone quiet, then observes it once. The decision model decides **what to do**; the runtime decides **when the UI is ready to reason over again**.
@@ -230,13 +269,14 @@ uses (operation, target, input, key, completion checks). `BLOCKED` and
 
 ## Install
 
-Currently macOS-first.
+The desktop backends are macOS-only; the Chrome backend runs wherever Chrome does.
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
 
-pip install -e '.[macos]'
+pip install -e '.[macos]'    # macOS desktop apps
+pip install -e '.[browser]'  # Chrome
 ```
 
 Set your TypeSafe key:
@@ -287,6 +327,17 @@ Change macOS appearance using Accessibility-heavy workflow:
 
 ```bash
 python examples/test_settings.py
+```
+
+### Browser
+
+Run any subtask in Chrome:
+
+```bash
+python examples/browser_demo.py https://en.wikipedia.org \
+  "Open the Wikipedia article about Gödel's incompleteness theorems" \
+  --input "query=Gödel's incompleteness theorems" \
+  --verify "The article titled Gödel's incompleteness theorems is open"
 ```
 
 ---

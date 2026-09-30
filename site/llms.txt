@@ -38,7 +38,7 @@ Requires macOS with Accessibility and Screen Recording permissions.
 - API reference: all types, classes, functions
 - Protocols: DesktopBackend, DecisionPolicy
 - Runtime configuration
-- Backends: MacOSHybridBackend, MacOSAXBackend, StateMachineBackend
+- Backends: MacOSHybridBackend, MacOSAXBackend, ChromeBackend, StateMachineBackend
 - Policies: ChoicePolicy (any ChoiceTransport), TypeSafeJevPolicy, ScriptedPolicy
 - Error types
 - Extending arc-cua

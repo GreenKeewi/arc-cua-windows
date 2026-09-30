@@ -10,6 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+browser = ["websockets>=13,<18"]
 dev = ["pytest>=8.4,<9", "ruff>=0.14,<1"]
 macos = [
   "pyobjc-framework-ApplicationServices>=11",

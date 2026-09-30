@@ -542,6 +542,33 @@ inside it) is dropped, so one control has one id. Each snapshot's `screenshot()`
 returns the PNG of the window image OCR read, at most 1280 px on the longest side,
 for image completion checks.
 
+### ChromeBackend
+
+```python
+from arc_cua.backends import ChromeBackend  # pip install 'arc-cua[browser]'
+
+backend = ChromeBackend.launch(
+    "https://example.com",
+    headless=False,              # headless=True for CI
+    capture_screenshots=False,   # True: snapshot.screenshot() returns the viewport PNG
+)
+backend = ChromeBackend.connect("http://127.0.0.1:9222", url="https://example.com")
+backend.navigate(url)            # caller-side navigation
+backend.close()                  # also a context manager
+```
+
+One Chrome tab through the DevTools protocol, on macOS, Linux and Windows. Input
+does not move the real pointer or need window focus. Elements (source
+"chrome_dom") are visible controls and text in the viewport, including open shadow
+roots and same-origin iframes. Covered controls have no actions and
+metadata["covered"] = True. `<select>`, range and date inputs use SET_VALUE with an
+agent input matching an option label or value; a select's options are in
+metadata["options"]. JavaScript dialogs appear as dialog_message plus
+dialog_accept/dialog_dismiss buttons. A link that opens a new tab switches the
+backend to it. context has url, title, viewport, scroll, more_above, more_below.
+Not supported: cross-origin iframes, closed shadow roots, file uploads, drag and
+drop, browser UI.
+
 ### MacOSAXBackend
 
 ```python
@@ -749,7 +776,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
 
-Loggers: `arc_cua.runtime`, `arc_cua.backends.macos_ax`, `arc_cua.backends.macos_hybrid`, `arc_cua.backends.macos_ocr`, `arc_cua.policies.typesafe`.
+Loggers: `arc_cua.runtime`, `arc_cua.backends.chrome`, `arc_cua.backends.cdp`, `arc_cua.backends.macos_ax`, `arc_cua.backends.macos_hybrid`, `arc_cua.backends.macos_ocr`, `arc_cua.policies.typesafe`.
 
 ---
 

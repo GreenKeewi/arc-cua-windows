@@ -279,3 +279,92 @@ The image is bound to the snapshot: `MacOSHybridBackend.observe()` keeps the win
 image that OCR read and sets `DesktopSnapshot.screenshot` to encode it on demand
 (scaled to at most 1280 px on the longest side; about 25 ms on Apple Silicon). A
 later capture could show a state the model never saw.
+
+## Chrome backend
+
+`ChromeBackend` (`backends/chrome.py`) implements the same `DesktopBackend`
+protocol for one Chrome tab. It talks to Chrome over one browser-level DevTools
+websocket (`backends/cdp.py`) in flattened session mode. All page-side work is one
+script, `backends/chrome_page.js`, evaluated with a method name; it installs its
+state on the page's window on first use.
+
+### Observation
+
+One script call walks the document in order, including open shadow roots and
+same-origin iframes (with their offsets added to element bounds), and returns:
+
+- **Interactive elements**: native controls, links, elements with an interactive
+  ARIA role, focusable non-container elements, `onclick` elements, and the outermost
+  element of a custom widget that shows a pointer cursor. Container roles such as
+  `listbox` or `menu` are not targets; their items are. Descendants of an interactive
+  element are not listed separately.
+- **Dialogs**: `<dialog open>`, `role=dialog/alertdialog` and `aria-modal` elements,
+  listed first and used as `parent_id` for elements inside them.
+- **Text**: headings, `alert`/`status` regions, and text blocks whose children are
+  all inline, excluding text inside interactive elements and labels of controls.
+
+Only elements that intersect the viewport and pass `checkVisibility` (opacity and
+visibility included), outside `aria-hidden` and `inert` subtrees, are listed.
+Interactive elements are capped at 250 and text at 120; omitted counts are in
+`context["omitted_elements"]`.
+
+Names follow a practical subset of the accessible-name algorithm:
+`aria-labelledby`, `aria-label`, associated `<label>`s, `placeholder`/`title`, `alt`,
+then visible text or a descendant image's alt text. Checkbox and radio values are
+booleans; field values are their text (passwords are masked). A visually hidden
+checkbox or radio is located and clicked through its label.
+
+Each DOM node keeps one id (`w<n>`) for as long as it stays in the document, held
+in a page-side `WeakMap`. A navigation starts a new page script, so earlier ids no
+longer resolve.
+
+### Covered targets
+
+For each interactive element, the script hit-tests its center and four inner
+points with `elementFromPoint`, descending through shadow roots and same-origin
+frames. If none reaches the element (or its label), it is listed with no actions
+and `metadata["covered"] = true`. Before a pointer action, the element is scrolled
+into view if needed and hit-tested again; a covered or missing target raises
+`StaleDesktopState` and the runtime re-observes.
+
+### Actions
+
+| Action | How it is performed |
+|---|---|
+| `CLICK`, `DOUBLE_CLICK`, `RIGHT_CLICK` | DevTools mouse events at the reachable point, with `MOD`/`SHIFT` modifier bits |
+| `TYPE_TEXT` | Click the field, select its contents, then `Input.insertText` with the literal |
+| `SET_VALUE` | For `<select>`, range and date-like inputs: set the value through the native setter and dispatch `input` and `change` |
+| `PRESS_KEY`, `HOTKEY` | DevTools key events with DOM key, code and key code; `MOD` is Meta on macOS and Ctrl elsewhere |
+| `SCROLL` | A mouse wheel event at the viewport center, 80% of the viewport |
+
+On macOS, Chrome implements editing shortcuts (`MOD+A/C/X/V/Z`, `MOD+SHIFT+Z`) in
+the browser process, so those key events carry the editing command explicitly.
+A `<select>` value matches an option label (case-insensitive) or value; no match
+fails the action.
+
+### Freshness
+
+`is_fresh` re-describes the target with the same script and compares its
+`semantic_guard()`, so a changed name, value, state or link URL is stale.
+Untargeted actions require the same page URL. `execute` checks the guard again
+before acting.
+
+### Settling
+
+`settle_probe()` returns the URL, `document.readyState`, a DOM mutation counter
+(inline `style` changes excluded, so JavaScript animations do not look like
+activity), the focused element and the scroll position. During a navigation the
+probe returns `("unavailable",)`, which the runtime treats as a change and keeps
+waiting on.
+
+### Dialogs and new tabs
+
+A JavaScript dialog blocks the page's script, so the backend tracks
+`Page.javascriptDialogOpening`. Input commands stop waiting when a dialog opens,
+because Chrome withholds their responses until it closes. While a dialog is open,
+`observe()` returns it as `dialog_message` with `dialog_accept` and, except for
+`alert`, `dialog_dismiss` buttons, answered with `Page.handleJavaScriptDialog`.
+
+When the tab opens another page (for example a `target=_blank` link), the backend
+activates and attaches to it at the next observation, and reports
+`context["switched_to_new_tab"] = True`.

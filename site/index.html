@@ -745,6 +745,13 @@ backend = MacOSHybridBackend()</code></pre>
   </div>
 
   <div class="api-block">
+    <h3>ChromeBackend</h3>
+    <p>One Chrome tab through the DevTools protocol, on macOS, Linux and Windows. Reads visible controls and text from the DOM in one call (about 9 ms on a large article), including shadow DOM and same-origin iframes. Input does not move the real pointer or need window focus.</p>
+    <pre><code>from arc_cua.backends import ChromeBackend  # pip install 'arc-cua[browser]'
+backend = ChromeBackend.launch("https://example.com")</code></pre>
+  </div>
+
+  <div class="api-block">
     <h3>MacOSAXBackend</h3>
     <p>Pure Accessibility backend. Traverses the AX tree of the frontmost application.</p>
     <pre><code>from arc_cua.backends import MacOSAXBackend
