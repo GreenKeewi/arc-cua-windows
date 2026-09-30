@@ -412,3 +412,47 @@ def test_click_modifier_is_only_valid_on_click() -> None:
     ]:
         with pytest.raises(InvalidDecision, match=message):
             materialize_action(decision, snapshot({"value": ""}), task)
+
+
+# --- min_confidence ---
+
+
+def _run_with_threshold(decisions, threshold):
+    backend = StateMachineBackend({"value": ""}, snapshot, transition)
+    task = Subtask(goal="Search", verification=("Search contains x",), inputs={"query": "x"})
+    config = RuntimeConfig(min_confidence=threshold)
+    return backend, DesktopExecutor(backend, ScriptedPolicy(decisions), config=config).run(task)
+
+
+def test_low_confidence_action_returns_needs_agent_without_acting() -> None:
+    backend, result = _run_with_threshold(
+        [Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="query", confidence=0.4)], 0.6,
+    )
+    assert result.status == TerminalKind.NEEDS_AGENT
+    assert result.actions_taken == 0
+    assert backend.state["value"] == ""
+    assert "0.40 for TYPE_TEXT is below min_confidence 0.60" in result.reason
+
+
+def test_low_confidence_completion_returns_needs_agent() -> None:
+    _, result = _run_with_threshold([Decision(terminal=TerminalKind.SUBTASK_COMPLETE, confidence=0.5)], 0.6)
+    assert result.status == TerminalKind.NEEDS_AGENT
+    assert "SUBTASK_COMPLETE" in result.reason
+
+
+def test_confident_or_unscored_decisions_and_handbacks_are_not_gated() -> None:
+    backend, result = _run_with_threshold([
+        Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="query", confidence=0.6),
+        Decision(terminal=TerminalKind.SUBTASK_COMPLETE),
+    ], 0.6)
+    assert result.status == TerminalKind.SUBTASK_COMPLETE
+    assert backend.state["value"] == "x"
+    _, result = _run_with_threshold([Decision(terminal=TerminalKind.BLOCKED, confidence=0.1)], 0.6)
+    assert result.status == TerminalKind.BLOCKED
+
+
+def test_min_confidence_must_be_a_probability() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="min_confidence"):
+        RuntimeConfig(min_confidence=1.5)

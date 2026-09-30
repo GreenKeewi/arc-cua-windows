@@ -92,6 +92,24 @@ JEV is the decision backend that powers the action loop. Given structured deskto
 
 JEV is accessed through [TypeSafe](https://typesafe.com). One JEV call can resolve the operation and its parameters in parallel.
 
+### Other decision models
+
+The loop is not tied to JEV. `ChoicePolicy` builds the finite-choice questions and validates the answers; a `ChoiceTransport` sends them to a decision model. `TypeSafeJevPolicy` is `ChoicePolicy` with the TypeSafe transport. Any provider that answers typed choice questions with a choice, confidence and probabilities can be plugged in:
+
+```python
+from arc_cua.policies import ChoicePolicy
+
+class MyTransport:
+    name = "MyProvider"
+
+    def ask(self, state, questions, *, images=()):
+        ...  # return {"answers": {name: {"choice", "confidence", "probabilities"}}}
+
+policy = ChoicePolicy(MyTransport())
+```
+
+See [the extension guide](site/llms-full.txt) for the request and answer shapes.
+
 ### The agent owns intent
 
 The upstream agent decides what needs to happen, what literal text may be used, what must not happen, and what counts as success. JEV chooses which element to target and which operation to perform — but never invents arbitrary text. Literal values always originate from the agent via `inputs`.
@@ -156,7 +174,7 @@ Use `MOD+SHIFT+N`, not `Command+Shift+N`; an unmodified Return is the built-in
 - **Accessibility (AX)** — semantic controls: buttons, fields, menus, roles, values, native actions
 - **Apple Vision OCR** — visible screen text with bounding boxes, for apps with incomplete accessibility
 
-Both normalize into `DesktopElement`s that JEV reasons over. JEV receives structured elements and IDs, not screenshots.
+Both normalize into `DesktopElement`s that JEV reasons over. JEV receives structured elements and IDs, not screenshots. Providers that accept images can also receive a window screenshot for completion checks; see [Terminal states](#terminal-states).
 
 The provider request stores element facts once in a shared table. Target choices
 refer to those observed IDs, and all questions share the same subtask. This reduces
@@ -190,6 +208,21 @@ is contradicted or cannot be established. These checks are model judgements;
 use `RuntimeConfig.verify` or caller-side validation when completion needs an
 independent check.
 
+**Screenshot completion checks.** With a provider that accepts images, pass a
+screenshot source, such as `ChoicePolicy(transport, screenshot=backend.capture_image)`.
+When the model proposes `SUBTASK_COMPLETE`, the policy asks the verification
+questions again with a PNG of the current window attached; those answers decide
+completion. Ordinary steps send no image, so only a completion costs an extra
+request. On macOS the image is the frontmost window's on-screen area, sheets
+included, scaled to at most 1280 px on the longest side. JEV does not accept
+images, so `TypeSafeJevPolicy` does not offer this.
+
+**Confidence threshold.** `RuntimeConfig(min_confidence=0.6)` returns
+`NEEDS_AGENT` instead of acting, or completing, when a decision's confidence is
+below the threshold. A `ChoicePolicy` decision's confidence is that of the weakest
+answer it uses (operation, target, input, key, completion checks). `BLOCKED` and
+`NEEDS_AGENT` are never gated, and decisions without a confidence are not gated.
+
 ---
 
 ## Install
@@ -214,7 +247,7 @@ export TYPESAFE_API_KEY=...
 The terminal/editor running Python needs both:
 
 - **Accessibility** — System Settings → Privacy & Security → Accessibility
-- **Screen Recording** — System Settings → Privacy & Security → Screen Recording (required for OCR)
+- **Screen Recording** — System Settings → Privacy & Security → Screen Recording (required for OCR and screenshot completion checks)
 
 Restart the terminal after granting permissions if necessary.
 
@@ -256,5 +289,7 @@ python examples/test_settings.py
 ---
 
 ## Roadmap
+
+Decision providers: an adapter for OpenAI's Decisions API (announced at DevDay 2026, in limited preview) will be added as a `ChoiceTransport` once its API is published.
 
 AX + OCR covers native and Electron desktop workflows. The next perception frontier is custom graphical interfaces — video timelines, CAD canvases, node graphs, spatial drag targets — which can be added as perception providers while keeping the same `DesktopElement` and execution interfaces.

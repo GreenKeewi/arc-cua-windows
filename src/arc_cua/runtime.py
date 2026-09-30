@@ -41,6 +41,13 @@ class RuntimeConfig:
     settle_poll_s: float = 0.02
     timeout_s: float | None = None
     verify: VerifyFn | None = None
+    # Return NEEDS_AGENT instead of acting (or completing) when a decision's
+    # confidence is below this. Decisions that report no confidence are not gated.
+    min_confidence: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.min_confidence is not None and not 0 <= self.min_confidence <= 1:
+            raise ValueError("RuntimeConfig.min_confidence must be between 0 and 1")
 
 
 class DesktopExecutor:
@@ -193,6 +200,15 @@ class DesktopExecutor:
             return True
         return self.config.verify(snapshot, subtask)
 
+    def _below_min_confidence(self, decision: Decision) -> bool:
+        """Gate actions and completions; BLOCKED/NEEDS_AGENT already hand back."""
+        threshold = self.config.min_confidence
+        if threshold is None or decision.confidence is None:
+            return False
+        if decision.terminal not in (None, TerminalKind.SUBTASK_COMPLETE):
+            return False
+        return decision.confidence < threshold
+
     def _make_record(
         self,
         *,
@@ -258,6 +274,22 @@ class DesktopExecutor:
 
             step += 1
             decision = self.policy.decide(subtask=subtask, snapshot=snapshot, history=history)
+
+            if self._below_min_confidence(decision):
+                what = decision.kind.value if decision.kind is not None else decision.terminal.value
+                result = ExecutionResult(
+                    status=TerminalKind.NEEDS_AGENT,
+                    subtask=subtask,
+                    final_snapshot=snapshot,
+                    history=tuple(history),
+                    reason=(
+                        f"Decision confidence {decision.confidence:.2f} for {what} is below "
+                        f"min_confidence {self.config.min_confidence:.2f}."
+                    ),
+                )
+                logger.debug("low confidence step=%d %s confidence=%.2f", step, what, decision.confidence)
+                yield StepEvent(step=step, snapshot=snapshot, decision=decision, result=result)
+                return result
 
             if decision.terminal is not None:
                 is_complete = decision.terminal == TerminalKind.SUBTASK_COMPLETE

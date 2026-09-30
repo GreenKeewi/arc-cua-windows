@@ -21,7 +21,7 @@ from ..models import (
 )
 from .macos_ax import MacOSAXBackend, copy_attributes, modifier_flags
 from .macos_events import AXEventMonitor
-from .macos_ocr import MacOSOCRProvider, window_thumbnail
+from .macos_ocr import MacOSOCRProvider, window_screenshot, window_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +290,19 @@ class MacOSHybridBackend:
             window_thumbnail(bounds),
             events,
         )
+
+    def capture_image(self) -> bytes | None:
+        """PNG of the frontmost window, for decision providers that accept images."""
+
+        pid = self.ocr.frontmost_pid()
+        window = (
+            self.ocr.front_window(pid)
+            if pid is not None
+            else None
+        )
+        if window is None:
+            return None
+        return window_screenshot(window.bounds)
 
     def is_fresh(
         self,

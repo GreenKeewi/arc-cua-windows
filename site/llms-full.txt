@@ -212,6 +212,9 @@ TypeSafeJevPolicy asks a separate choice head for each verification criterion.
 A proposed SUBTASK_COMPLETE becomes NEEDS_AGENT, with an explanatory reason, if
 any criterion is NOT_SATISFIED or UNKNOWN. These are model judgements, not an
 independent proof; callers can inspect the result and supply RuntimeConfig.verify.
+With an image-capable transport, ChoicePolicy(transport, screenshot=backend.capture_image)
+re-asks the verification heads with a PNG of the current window before accepting
+completion.
 
 ### Bounds
 
@@ -298,7 +301,7 @@ class Decision:
     drag_dx: float | None = None
     drag_dy: float | None = None
     click_modifier: str | None = None  # CLICK only: MOD (toggle in selection) or SHIFT (extend range)
-    confidence: float | None = None
+    confidence: float | None = None    # ChoicePolicy: weakest answer the decision uses
     latency_ms: int | None = None
     raw: Mapping[str, Any] = {}  # Raw policy response for debugging
     reason: str | None = None   # Preserved in terminal execution results
@@ -420,7 +423,12 @@ class RuntimeConfig:
     settle_poll_s: float = 0.02
     timeout_s: float | None = None   # Wall-clock timeout (None = no limit)
     verify: VerifyFn | None = None   # Verification callback for SUBTASK_COMPLETE
+    min_confidence: float | None = None  # Below this: NEEDS_AGENT instead of acting/completing
 ```
+
+min_confidence gates action decisions and SUBTASK_COMPLETE. BLOCKED, NEEDS_AGENT
+and decisions without a confidence are not gated. The reason names the confidence,
+the operation and the threshold.
 
 ### VerifyFn
 
@@ -434,7 +442,8 @@ When set on RuntimeConfig, called before accepting SUBTASK_COMPLETE. If it retur
 
 1. Observe desktop
 2. Ask policy for a decision
-3. If terminal: verify (if callback set), yield final event, return
+3. If the decision is an action or SUBTASK_COMPLETE below min_confidence: NEEDS_AGENT, return
+   If terminal: verify (if callback set), yield final event, return
 4. Materialize action (validate target exists, is legal, resolve input_key)
 5. Check freshness (target guard matches current state)
 6. Execute via backend
@@ -446,6 +455,7 @@ When set on RuntimeConfig, called before accepting SUBTASK_COMPLETE. If it retur
 Termination conditions:
 - Policy returns terminal decision (SUBTASK_COMPLETE, BLOCKED, NEEDS_AGENT)
 - Verification callback rejects completion -> NEEDS_AGENT
+- Decision confidence below min_confidence -> NEEDS_AGENT
 - Action budget exhausted -> NEEDS_AGENT
 - Wall-clock timeout -> NEEDS_AGENT
 - cancel() called -> NEEDS_AGENT
@@ -524,6 +534,10 @@ backend = MacOSHybridBackend()
 
 Combines MacOSAXBackend (semantic controls) and MacOSOCRProvider (Apple Vision OCR). Handles modal detection, OCR deduplication, and coordinate-based execution for OCR targets.
 
+`backend.capture_image()` returns a PNG of the frontmost window's on-screen area
+(sheets included), at most 1280 px on the longest side, or None when there is no
+window. Pass it as ChoicePolicy's `screenshot` for image completion checks.
+
 ### MacOSAXBackend
 
 ```python
@@ -570,6 +584,23 @@ Deterministic backend for tests and demos. You define:
 ---
 
 ## Policies
+
+### ChoicePolicy
+
+```python
+from arc_cua.policies import ChoicePolicy, TypeSafeTransport
+
+policy = ChoicePolicy(
+    TypeSafeTransport(),
+    max_candidates=240,
+    screenshot=None,  # e.g. backend.capture_image; needs transport.supports_images
+)
+```
+
+Provider-neutral decision policy. It builds the operation, target, input, key and
+verification choice questions from the current DesktopSnapshot, sends them through
+a ChoiceTransport, and validates the selected answers. TypeSafeJevPolicy is
+ChoicePolicy with a TypeSafeTransport.
 
 ### TypeSafeJevPolicy
 
@@ -681,6 +712,28 @@ class MyPolicy:
         #   Decision(kind=ActionKind.CLICK, target_id="element_id")
         #   Decision(terminal=TerminalKind.SUBTASK_COMPLETE)
         ...
+```
+
+### Custom decision provider
+
+Implement the ChoiceTransport protocol to use another decision model with the
+same questions, validation and runtime:
+
+```python
+class MyTransport:
+    name = "MyProvider"     # shown in invalid-response errors
+    supports_images = True  # optional; required for screenshot=
+
+    def ask(self, state, questions, *, images=()):
+        # images: PNG bytes, only sent for screenshot completion checks
+        # state: shared subtask, desktop element table and recent actions
+        # questions: {name: {"type": "choice", "criteria": {id: description}, "instructions": {...}}}
+        # Return {"answers": {name: {"choice": id, "confidence": float,
+        #                            "probabilities": {id: float, ...}}}}.
+        # Raise on failure; no action is executed.
+        ...
+
+policy = ChoicePolicy(MyTransport())
 ```
 
 ### Logging

@@ -679,6 +679,71 @@ def window_thumbnail(
     )
 
 
+def window_screenshot(
+    bounds: Bounds,
+    *,
+    max_side: int = 1280,
+) -> bytes:
+    """PNG of the on-screen pixels inside ``bounds``, longest side at most ``max_side``.
+
+    Like ``window_thumbnail``, sheets and popovers over the window are included.
+    Used when a decision provider accepts images.
+    """
+
+    Quartz, _, _, AppKit = _frameworks()
+
+    image = Quartz.CGWindowListCreateImage(
+        Quartz.CGRectMake(
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+        ),
+        Quartz.kCGWindowListOptionOnScreenOnly,
+        Quartz.kCGNullWindowID,
+        Quartz.kCGWindowImageBoundsIgnoreFraming
+        | Quartz.kCGWindowImageNominalResolution,
+    )
+
+    if image is None:
+        raise PermissionError(
+            "Could not capture the screen. "
+            "Check Screen Recording permission."
+        )
+
+    source_width = Quartz.CGImageGetWidth(image)
+    source_height = Quartz.CGImageGetHeight(image)
+    scale = min(1.0, max_side / max(source_width, source_height, 1))
+    width = max(1, round(source_width * scale))
+    height = max(1, round(source_height * scale))
+
+    context = Quartz.CGBitmapContextCreate(
+        None,
+        width,
+        height,
+        8,
+        0,
+        Quartz.CGColorSpaceCreateDeviceRGB(),
+        Quartz.kCGImageAlphaNoneSkipLast,
+    )
+    Quartz.CGContextSetInterpolationQuality(
+        context,
+        Quartz.kCGInterpolationHigh,
+    )
+    Quartz.CGContextDrawImage(
+        context,
+        Quartz.CGRectMake(0, 0, width, height),
+        image,
+    )
+    scaled = Quartz.CGBitmapContextCreateImage(context)
+    bitmap = AppKit.NSBitmapImageRep.alloc().initWithCGImage_(scaled)
+    data = bitmap.representationUsingType_properties_(
+        AppKit.NSBitmapImageFileTypePNG,
+        None,
+    )
+    return bytes(data)
+
+
 def _raise_on_vision_error(
     result: Any,
 ) -> None:

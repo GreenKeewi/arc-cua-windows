@@ -102,6 +102,7 @@ DesktopElement(
 ```
 
 The screenshot is processed locally. JEV receives structured text elements and IDs, not the screenshot itself.
+Only screenshot completion checks (below) send an image, and only to a provider that accepts images.
 
 ### Visual text-entry targets
 
@@ -157,6 +158,18 @@ click_modifier:
 ```
 
 One JEV request can ask for the operation and speculative operation-specific choices in parallel. Only the head corresponding to the selected operation is consumed.
+
+These questions are provider-neutral. `ChoicePolicy` (`policies/choice.py`) builds
+them and validates the answers; a `ChoiceTransport` sends them. `TypeSafeTransport`
+(`policies/typesafe.py`) adds the model name, posts to TypeSafe, and retries rate
+limits. An invalid answer raises `Invalid <provider> choice response` and no action
+is executed.
+
+The decision's `confidence` is the lowest confidence among the answers it uses,
+such as operation, target and input for `TYPE_TEXT`, or operation plus every
+verification answer for `SUBTASK_COMPLETE`. Speculative heads that were not
+consumed do not affect it. `RuntimeConfig.min_confidence` compares against this
+value before any action or completion is accepted.
 
 ### Subtask shortcuts
 
@@ -234,3 +247,20 @@ This is a consistency check between model decisions, not proof of application
 state. Callers should inspect results and can supply `RuntimeConfig.verify` for an
 independent domain-specific check. A policy's optional `Decision.reason` is
 preserved in the terminal execution result.
+
+### Screenshot completion checks
+
+When `ChoicePolicy` has a `screenshot` source, the transport must set
+`supports_images = True`. After the first request proposes `SUBTASK_COMPLETE`,
+the policy calls the source once and sends a second request with the same state,
+only the verification questions, and the PNG in `images`. Their instructions add
+that the attached image shows the current window and takes precedence when it
+disagrees with the element table. The second request's answers replace the first
+request's verification answers. Its response is kept in
+`Decision.raw["image_verification"]`, and its latency is added to the decision's.
+A source that returns no image raises, so completion is never accepted unchecked.
+
+`MacOSHybridBackend.capture_image()` captures the frontmost window's on-screen
+area, including sheets and panels, the same region as the settle probe. It is
+scaled to at most 1280 px on the longest side and encoded as PNG. It takes about
+45 ms warm on Apple Silicon.

@@ -60,7 +60,7 @@ def test_provider_token_limit_error_is_actionable_and_does_not_echo_response_tex
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         policy = TypeSafeJevPolicy(api_key="test", client=client)
         with pytest.raises(RuntimeError, match="max_tokens_exceeded") as error:
-            policy._post({})
+            policy.transport._post({})
     assert "no action executed" in str(error.value)
     assert "secret-provider-content" not in str(error.value)
 
@@ -114,7 +114,7 @@ def test_policy_history_preserves_the_keys_that_were_actually_executed(monkeypat
             "probabilities": {key: float(key == "NEEDS_AGENT") for key in choices},
         }}}
 
-    monkeypatch.setattr(policy, "_post", respond)
+    monkeypatch.setattr(policy.transport, "_post", respond)
     history = [
         ActionRecord(step=index, decision=Decision(kind=action.kind), action=action,
                      before_revision="same", after_revision="same", state_changed=False, elapsed_ms=10)
@@ -129,7 +129,7 @@ def test_policy_history_preserves_the_keys_that_were_actually_executed(monkeypat
                       snapshot=DesktopSnapshot(application="Editor", window="Document", revision="same", elements=()),
                       history=history)
     finally:
-        policy.client.close()
+        policy.transport.client.close()
     actions = captured[0]["state"]["recent_actions"]
     assert actions[0]["hotkey"] == "MOD+S"
     assert actions[1]["key"] == "ENTER"
@@ -157,7 +157,7 @@ def test_completion_requires_all_criterion_checks(monkeypatch, criterion_result,
             for key, choice in selections.items()
         }}
 
-    monkeypatch.setattr(policy, "_post", respond)
+    monkeypatch.setattr(policy.transport, "_post", respond)
     snapshot = DesktopSnapshot(application="Files", window="Parent", revision="same", elements=())
     backend = StateMachineBackend(initial_state={}, snapshot_factory=lambda state: snapshot,
                                   transition=lambda state, action: pytest.fail("Unexpected UI action"))
@@ -165,7 +165,7 @@ def test_completion_requires_all_criterion_checks(monkeypatch, criterion_result,
     try:
         result = DesktopExecutor(backend, policy).run(task)
     finally:
-        policy.client.close()
+        policy.transport.client.close()
     assert result.status.value == terminal
     if terminal == "NEEDS_AGENT":
         assert "Child is open" in result.reason
@@ -189,7 +189,7 @@ def test_set_value_does_not_offer_controls_incompatible_with_supplied_literals(v
             Subtask(goal="Set value", verification=("Value set",), inputs={"value": value}), snapshot,
         )
     finally:
-        policy.client.close()
+        policy.transport.client.close()
     assert set(maps["SET_VALUE_target"]) == expected
 
 
@@ -212,7 +212,7 @@ def test_type_text_can_submit_with_a_following_key(monkeypatch, then_key, expect
             "type_text_then_key": answer(then_key, questions["type_text_then_key"]["criteria"]),
         }}
 
-    monkeypatch.setattr(policy, "_post", respond)
+    monkeypatch.setattr(policy.transport, "_post", respond)
     snapshot = DesktopSnapshot(application="Files", window="Go to Folder", revision="1", elements=(
         DesktopElement(id="path", role="text_field", name="Path", actions=(ActionKind.TYPE_TEXT,)),
     ))
@@ -220,7 +220,7 @@ def test_type_text_can_submit_with_a_following_key(monkeypatch, then_key, expect
     try:
         decision = policy.decide(subtask=task, snapshot=snapshot, history=())
     finally:
-        policy.client.close()
+        policy.transport.client.close()
     assert set(captured[0]["questions"]["type_text_then_key"]["criteria"]) == {"NONE", "ENTER", "TAB"}
     assert decision.kind == ActionKind.TYPE_TEXT
     assert decision.key == expected
@@ -234,7 +234,7 @@ def test_type_text_submit_head_is_not_offered_without_inputs() -> None:
     try:
         questions, _, _ = policy._build_questions(Subtask(goal="Look", verification=("Seen",)), snapshot)
     finally:
-        policy.client.close()
+        policy.transport.client.close()
     assert "type_text_then_key" not in questions
 
 
@@ -256,7 +256,7 @@ def test_click_can_hold_a_selection_modifier(monkeypatch, modifier, expected) ->
             "click_modifier": answer(modifier, questions["click_modifier"]["criteria"]),
         }}
 
-    monkeypatch.setattr(policy, "_post", respond)
+    monkeypatch.setattr(policy.transport, "_post", respond)
     snapshot = DesktopSnapshot(application="Files", window="Inbox", revision="1", elements=tuple(
         DesktopElement(id=f"row_{index}", role="row", name=f"Report {index}.pdf", actions=(ActionKind.CLICK,))
         for index in range(3)
@@ -265,7 +265,7 @@ def test_click_can_hold_a_selection_modifier(monkeypatch, modifier, expected) ->
         decision = policy.decide(subtask=Subtask(goal="Select reports", verification=("Selected",)),
                                  snapshot=snapshot, history=())
     finally:
-        policy.client.close()
+        policy.transport.client.close()
     assert set(captured[0]["questions"]["click_modifier"]["criteria"]) == {"NONE", "MOD", "SHIFT"}
     assert decision.kind == ActionKind.CLICK
     assert decision.click_modifier == expected

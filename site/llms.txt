@@ -39,6 +39,6 @@ Requires macOS with Accessibility and Screen Recording permissions.
 - Protocols: DesktopBackend, DecisionPolicy
 - Runtime configuration
 - Backends: MacOSHybridBackend, MacOSAXBackend, StateMachineBackend
-- Policies: TypeSafeJevPolicy, ScriptedPolicy
+- Policies: ChoicePolicy (any ChoiceTransport), TypeSafeJevPolicy, ScriptedPolicy
 - Error types
 - Extending arc-cua
