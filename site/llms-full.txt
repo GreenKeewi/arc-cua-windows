@@ -582,6 +582,12 @@ with MacOSHybridBackend(MacOSApp.from_bundle_id("com.apple.TextEdit").pid) as ba
 
 Combines MacOSAXBackend (semantic controls) and MacOSOCRProvider (Apple Vision OCR). Handles modal detection, OCR deduplication, and coordinate-based execution for OCR targets.
 
+Modal detection: a sheet, dialog or popover in the observed window (role AXSheet,
+AXDialog or AXPopover, subrole AXDialog/AXSystemDialog, or AXModal true), found
+during the accessibility walk, or an app window with such a role or subrole, blocks
+the window; only its elements are offered and OCR is limited to its bounds. Help-tag
+windows never count, and a sheet on another window of the app is ignored.
+
 `MacOSHybridBackend(pid, ocr="auto", capture_screenshots=False)`: with `ocr="auto"`
 (default) OCR runs only when the accessibility elements include no enabled,
 labelled application control (roles such as Button, CheckBox, PopUpButton, Link,

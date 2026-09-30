@@ -121,6 +121,8 @@ class MacOSAXBackend:
         elements: list[DesktopElement] = []
         visited: set[str] = set()
         window_bounds = _ax_bounds(AS, root)
+        # Sheets, dialogs and popovers met by the walk; the hybrid backend isolates them.
+        self.modal_roots: list[tuple[Any, Bounds | None, bool]] = []
         if self._cache is not None:
             cache = self._cache
             cache.begin(AS, root, window_bounds, lambda ref: cache.role_of(ref) or str(_attr(AS, ref, "AXRole")))
@@ -313,10 +315,12 @@ class MacOSAXBackend:
         if clip is not None:
             bounds = node.bounds
             if depth > 0 and bounds is not None and bounds.width > 0 and bounds.height > 0 \
-                    and not _overlaps(bounds, clip):
+                    and node.role not in _UNCLIPPED_ROLES and not _overlaps(bounds, clip):
                 return
             if depth == 0 or node.role in _CLIPPING_ROLES:
                 clip = _intersect(clip, bounds)
+        if node.modal and hasattr(self, "modal_roots"):
+            self.modal_roots.append((ref, node.bounds, depth == 0))
         element = node.element
         next_parent = parent_id
         if element is not None:
@@ -352,7 +356,8 @@ class MacOSAXBackend:
         bounds = _bounds_from_values(AS, attributes.get("AXPosition"), attributes.get("AXSize")) \
             if attributes is not None else _ax_bounds(AS, ref)
         element = self._element_from_ref(ref, element_id, parent_id=parent_id, attributes=attributes)
-        return AXNode(attributes, role, bounds, element, _children(AS, ref, role, attributes))
+        children = _children(AS, ref, role, attributes)
+        return AXNode(attributes, role, bounds, element, children, is_modal(role, attributes))
 
     def _request_full_tree(self, AS: Any, app_ref: Any) -> None:
         """Ask Electron/Chromium apps to expose their full tree. They build it only for
@@ -551,7 +556,24 @@ def _intersect(clip: Bounds | None, bounds: Bounds | None) -> Bounds | None:
 _ELEMENT_ATTRIBUTES = (
     "AXRole", "AXTitle", "AXDescription", "AXLabel", "AXHelp", "AXValue", "AXEnabled", "AXFocused",
     "AXSelected", "AXExpanded", "AXIdentifier", "AXURL", "AXPosition", "AXSize", "AXChildren", "AXSubrole",
+    "AXModal",
 )
+
+# Elements that block the rest of their window (sheets, dialogs, popovers), and the
+# window subroles of app-wide dialogs and alerts.
+MODAL_ROLES = {"AXSheet", "AXDialog", "AXPopover"}
+DIALOG_SUBROLES = {"AXDialog", "AXSystemDialog"}
+# Never skipped as off-screen: popovers and menus can extend past their window.
+_UNCLIPPED_ROLES = MODAL_ROLES | {"AXMenu"}
+
+
+def is_modal(role: str, attributes: dict[str, Any] | None) -> bool:
+    if role in MODAL_ROLES:
+        return True
+    if attributes is None:
+        return False
+    subrole = attributes.get("AXSubrole")
+    return (subrole is not None and str(subrole) in DIALOG_SUBROLES) or attributes.get("AXModal") is True
 
 # Title-bar buttons: part of the window, not of the application's content.
 WINDOW_CONTROL_SUBROLES = {"AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton"}

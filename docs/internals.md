@@ -75,6 +75,27 @@ The observer uses the focused window, falling back to the main window, and inclu
 the focused element separately when an inline editor lives outside that window's
 tree. This avoids traversing inactive application menus during inline editing.
 
+### Sheets, dialogs and popovers
+
+When something blocks the observed window, `MacOSHybridBackend` offers only its
+controls, and limits OCR to its bounds. AppKit lists only standard windows in
+`AXWindows`: a sheet is an `AXSheet` inside its window's tree, and a popover an
+`AXPopover` inside the window it is anchored to. So detection uses:
+
+- **The walk.** Elements whose role is `AXSheet`, `AXDialog` or `AXPopover`, whose
+  subrole is `AXDialog` or `AXSystemDialog`, or whose `AXModal` is true, are recorded
+  as the walk meets them, at no extra cost. When a sheet is open the app usually
+  reports the sheet itself as its focused window, so it is the observed root and its
+  elements are used directly.
+- **App-wide dialogs.** Each `AXWindows` entry's role, subrole and `AXModal` are read
+  in one request; help tags (tooltips) listed there never count.
+
+A sheet on another window of the app does not block the observed one and is
+ignored. The walk never skips sheets, dialogs, popovers or menus as off-screen,
+since popovers and menus can extend past their window. The modal's bounds are its
+own accessibility frame. Web dialogs (`AXGroup` with subrole `AXApplicationDialog`)
+count only when they report `AXModal`.
+
 Control bounds are decoded from AXValue geometry. `CLICK` invokes `AXPress` when
 available or uses the control's current bounds; `AXShowMenu` is not treated as a
 left click. Exposed double-click and right-click operations use current geometry.

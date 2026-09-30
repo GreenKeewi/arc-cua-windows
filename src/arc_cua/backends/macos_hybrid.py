@@ -20,7 +20,7 @@ from ..models import (
     DesktopSnapshot,
     ExecutableAction,
 )
-from .macos_ax import _KEYCODES, MacOSAXBackend, copy_attributes, modifier_flags
+from .macos_ax import _KEYCODES, MacOSAXBackend, _bounds_from_values, copy_attributes, is_modal, modifier_flags
 from .macos_events import AXEventMonitor
 from .macos_ocr import MacOSOCRProvider, _normalize_ocr_text, png_image, window_thumbnail
 
@@ -160,9 +160,10 @@ class MacOSHybridBackend:
             ax_snapshot.context["pid"]
         )
 
-        modal_elements, modal_bounds = _collect_modal_ax_elements(
+        modal_elements, modal_bounds = _modal_elements(
             self.ax,
             pid,
+            ax_snapshot,
         )
 
         modal_active = bool(
@@ -777,34 +778,6 @@ def _ax_role(
     )
 
 
-def _ax_is_modal(
-    AX: Any,
-    element: Any,
-) -> bool:
-    role = _ax_role(
-        AX,
-        element,
-    )
-
-    if role in {
-        "AXSheet",
-        "AXDialog",
-        "AXPopover",
-    }:
-        return True
-
-    modal = _ax_copy_attribute(
-        AX,
-        element,
-        "AXModal",
-    )
-
-    try:
-        return bool(modal)
-    except Exception:
-        return False
-
-
 def _ax_children(
     AX: Any,
     element: Any,
@@ -828,171 +801,49 @@ def _ax_children(
     return children
 
 
-_MODAL_ROLES = {
-    "AXSheet",
-    "AXDialog",
-    "AXPopover",
-}
+def _modal_elements(
+    ax_backend: Any,
+    pid: int,
+    snapshot: DesktopSnapshot,
+) -> tuple[tuple[DesktopElement, ...], Bounds | None]:
+    """The elements of what blocks the observed window, and its bounds.
 
-
-def _ax_modal_node(
-    AX: Any,
-    element: Any,
-) -> tuple[bool, list[Any]]:
-    """Modal flag and children of one node, in a single AX call when possible."""
-
-    attributes = copy_attributes(
-        AX,
-        element,
-        ("AXRole", "AXModal", "AXSheets", "AXChildren"),
-    )
-
-    if attributes is None:
-        return (
-            _ax_is_modal(AX, element),
-            _ax_children(AX, element),
-        )
-
-    is_modal = (
-        str(attributes["AXRole"] or "") in _MODAL_ROLES
-        or bool(attributes["AXModal"])
-    )
-
-    return (
-        is_modal,
-        _ax_values(attributes["AXSheets"])
-        + _ax_values(attributes["AXChildren"]),
-    )
-
-
-def _find_modal_roots(
-    AX: Any,
-    app: Any,
-    identity_for: Any,
-) -> list[Any]:
-    seeds: list[
-        tuple[Any, int]
-    ] = []
-
-    focused_window = _ax_copy_attribute(
-        AX,
-        app,
-        "AXFocusedWindow",
-    )
-
-    if focused_window is not None:
-        seeds.append(
-            (
-                focused_window,
-                0,
-            )
-        )
-
-    app_windows = _ax_copy_attribute(
-        AX,
-        app,
-        "AXWindows",
-    )
-
-    for window in _ax_values(
-        app_windows
-    ):
-        seeds.append(
-            (
-                window,
-                0,
-            )
-        )
-
-    roots: list[Any] = []
-    queue = deque(seeds)
-    visited: set[str] = set()
-
-    max_nodes = 400
-    max_depth = 8
-    seen = 0
-
-    while (
-        queue
-        and seen < max_nodes
-    ):
-        element, depth = queue.popleft()
-        seen += 1
-
-        key = identity_for(element)
-
-        if key in visited:
+    Sheets and popovers live inside their window's tree, and the walk records them;
+    a sheet on another window does not block this one. App-wide dialogs and alerts
+    are windows of their own, so each app window's role is checked once. Help tags
+    (tooltips) listed among the windows never count."""
+    found = list(getattr(ax_backend, "modal_roots", ()))
+    AX = _ax_framework()
+    try:
+        app = AX.AXUIElementCreateApplication(pid)
+    except Exception:
+        app = None
+    known = {ax_backend.identity_for(ref) for ref, _, _ in found}
+    for window in _ax_values(_ax_copy_attribute(AX, app, "AXWindows")) if app is not None else ():
+        attributes = copy_attributes(AX, window, ("AXRole", "AXSubrole", "AXModal", "AXPosition", "AXSize"))
+        if attributes is None or str(attributes["AXRole"] or "") == "AXHelpTag":
             continue
-
-        visited.add(
-            key
-        )
-
-        is_modal, children = _ax_modal_node(
-            AX,
-            element,
-        )
-
-        if is_modal:
-            roots.append(
-                element
-            )
-            continue
-
-        if depth >= max_depth:
-            continue
-
-        for child in children:
-            queue.append(
-                (
-                    child,
-                    depth + 1,
-                )
-            )
-
-    unique: list[Any] = []
-    seen_keys: set[str] = set()
-
-    for root in roots:
-        key = identity_for(root)
-
-        if key in seen_keys:
-            continue
-
-        seen_keys.add(
-            key
-        )
-        unique.append(
-            root
-        )
-
-    return unique
+        identity = ax_backend.identity_for(window)
+        if is_modal(str(attributes["AXRole"] or ""), attributes) and identity not in known:
+            known.add(identity)
+            bounds = _bounds_from_values(AX, attributes["AXPosition"], attributes["AXSize"])
+            found.append((window, bounds, False))
+    if not found:
+        return (), None
+    if all(is_root for _, _, is_root in found):
+        # The observed window is itself the sheet or dialog: its elements are the modal's.
+        return tuple(snapshot.elements), _union_bounds([b for _, b, _ in found if b is not None])
+    return _collect_modal_ax_elements(ax_backend, [ref for ref, _, is_root in found if not is_root])
 
 
 def _collect_modal_ax_elements(
     ax_backend: Any,
-    pid: int,
+    roots: list[Any],
 ) -> tuple[
     tuple[DesktopElement, ...],
     Bounds | None,
 ]:
     AX = _ax_framework()
-
-    try:
-        app = AX.AXUIElementCreateApplication(
-            pid
-        )
-    except Exception:
-        return (), None
-
-    roots = _find_modal_roots(
-        AX,
-        app,
-        ax_backend.identity_for,
-    )
-
-    if not roots:
-        return (), None
 
     elements: list[
         DesktopElement

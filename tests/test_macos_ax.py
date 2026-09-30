@@ -70,14 +70,46 @@ def test_traversal_does_not_drop_siblings_with_reused_wrapper_addresses(monkeypa
     assert [element.name for element in elements] == ["root", "left", "right"]
 
 
-def test_modal_discovery_deduplicates_distinct_wrappers_for_same_sheet(monkeypatch):
+def modal_backend(monkeypatch, windows, modal_roots):
     install_cf(monkeypatch)
-    ids = macos_ax._AXIdentityRegistry()
-    app = Ref("app", AXFocusedWindow=Ref("sheet", AXRole="AXSheet"),
-              AXWindows=[Ref("sheet", AXRole="AXSheet")])
+    monkeypatch.setattr(macos_hybrid, "_ax_framework", lambda: SimpleNamespace(
+        AXUIElementCreateApplication=lambda pid: Ref("app", AXWindows=windows)))
     monkeypatch.setattr(macos_hybrid, "_ax_copy_attribute", lambda api, ref, name: ref.attributes.get(name))
-    roots = macos_hybrid._find_modal_roots(SimpleNamespace(), app, ids.id_for)
-    assert len(roots) == 1
+    monkeypatch.setattr(macos_hybrid, "copy_attributes",
+                        lambda api, ref, names: {name: ref.attributes.get(name) for name in names})
+    monkeypatch.setattr(macos_hybrid, "_bounds_from_values", lambda api, pos, size: None)
+    collected = []
+    monkeypatch.setattr(macos_hybrid, "_collect_modal_ax_elements",
+                        lambda backend, roots: (collected.extend(roots) or (), None))
+    ids = macos_ax._AXIdentityRegistry()
+    ids.begin_observation()
+    return SimpleNamespace(modal_roots=modal_roots, identity_for=ids.id_for), collected
+
+
+def test_observed_sheet_reuses_the_walked_elements(monkeypatch):
+    backend, collected = modal_backend(monkeypatch, [Ref("doc", AXRole="AXWindow")],
+                                       [(Ref("sheet"), Bounds(0, 0, 10, 10), True)])
+    snapshot = DesktopSnapshot(application="App", window="Sheet", revision="1",
+                               elements=(DesktopElement(id="ok", role="Button", name="OK"),))
+    elements, bounds = macos_hybrid._modal_elements(backend, 1, snapshot)
+    assert [e.id for e in elements] == ["ok"] and bounds == Bounds(0, 0, 10, 10)
+    assert collected == []
+
+
+def test_dialog_windows_count_but_tooltips_and_other_windows_sheets_do_not(monkeypatch):
+    alert = Ref("alert", AXRole="AXWindow", AXSubrole="AXDialog")
+    windows = [Ref("doc", AXRole="AXWindow", AXSubrole="AXStandardWindow"),
+               Ref("tip", AXRole="AXHelpTag", AXModal=None), alert,
+               Ref("alert", AXRole="AXWindow", AXSubrole="AXDialog")]
+    backend, collected = modal_backend(monkeypatch, windows, [])
+    macos_hybrid._modal_elements(backend, 1, DesktopSnapshot(application="A", window="W", revision="1", elements=()))
+    assert [ref.identity for ref in collected] == ["alert"]  # once, although listed through two wrappers
+
+
+def test_no_dialog_means_no_isolation(monkeypatch):
+    backend, collected = modal_backend(monkeypatch, [Ref("doc", AXRole="AXWindow", AXSubrole="AXStandardWindow")], [])
+    snapshot = DesktopSnapshot(application="A", window="W", revision="1", elements=())
+    assert macos_hybrid._modal_elements(backend, 1, snapshot) == ((), None)
 
 
 def test_inline_editor_uses_main_window_without_traversing_inactive_app_menus(monkeypatch):

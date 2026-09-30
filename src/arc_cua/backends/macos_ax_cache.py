@@ -54,6 +54,7 @@ class AXNode:
     bounds: Bounds | None
     element: DesktopElement | None
     children: list[Any] = field(default_factory=list)
+    modal: bool = False  # a sheet, dialog or popover, or flagged AXModal
 
 
 class AXChangeFeed:
