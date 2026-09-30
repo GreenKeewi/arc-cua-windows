@@ -102,6 +102,30 @@ clients that request it, and discard it again later. Each observation sets
 `AXManualAccessibility` on the app; apps that do not support the attribute are not
 asked again.
 
+### Cached observation
+
+`MacOSAXBackend(pid, cache=True)` keeps each element read in the previous
+observation (`backends/macos_ax_cache.py`). An `AXObserver` on a background run
+loop collects the app's notifications. At the next observation:
+
+- value, title, selection, focus and row changes re-read that element;
+- created or destroyed elements re-read their parent;
+- layout, move, resize and scroll-position changes re-read that element's subtree;
+- a scroll bar's value change re-reads the scroll area it belongs to, because
+  scrolling is often announced only that way;
+- window changes (another window chosen, moved, resized, minimized, menus) and any
+  change whose parent cannot be found start over;
+- the window element is always re-read, and every container, plus leaf roles that
+  host loaded content (groups, cells, rows, scroll and web areas), has its children
+  list re-fetched and compared, so elements added without a notification are found.
+
+Unchanged elements cost no requests. In measurements, repeat observations of Finder
+and a 75-element app took about 4–6 ms instead of 27–40 ms, with the same result
+as an uncached walk. Values that apps change without a notification, such as a
+clock in Calendar's week view, can be stale until the element is read again, which
+is why the cache is opt-in. Actions are unaffected: `is_fresh` and `execute` read
+the target again.
+
 ---
 
 ## Local Apple Vision OCR

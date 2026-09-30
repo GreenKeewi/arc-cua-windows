@@ -613,10 +613,21 @@ drop, browser UI.
 
 ```python
 from arc_cua.backends import MacOSAXBackend
-backend = MacOSAXBackend(pid, max_elements=1200, max_depth=18)
+backend = MacOSAXBackend(pid, max_elements=1200, max_depth=18, cache=False)
 ```
 
 Pure Accessibility backend. Traverses the AX tree of the app with that process ID, from its window on the current desktop. Background input as for MacOSHybridBackend. Supports CLICK, DOUBLE_CLICK, RIGHT_CLICK, TYPE_TEXT, SET_VALUE, PRESS_KEY, HOTKEY, SCROLL.
+
+The walk reads only what is on screen: visible rows of lists and tables, and elements
+inside the window and enclosing scroll areas. Electron/Chromium apps are asked for
+their full tree on each observation.
+
+`cache=True` keeps elements between observations and re-reads only those the app
+reports as changed (AX notifications), plus each container's children list, the
+window itself, and everything after the window moves, resizes or changes. Repeat
+observations take a few milliseconds instead of tens. A value an app changes
+without notifying (for example a clock) can be stale until that element is read
+again; targets are still re-checked before every action. `close()` stops it.
 
 AX element IDs use Core Foundation equality and hashing, with collision handling,
 across normal and modal traversals. The observer uses the main window as a fallback

@@ -759,8 +759,8 @@ backend = ChromeBackend.launch("https://example.com")</code></pre>
     <h3>MacOSAXBackend</h3>
     <p>Pure Accessibility backend. Traverses the AX tree of one app, given by process ID, with background input.</p>
     <pre><code>from arc_cua.backends import MacOSAXBackend
-backend = MacOSAXBackend(pid, max_elements=1200, max_depth=18)</code></pre>
-    <p>Supports CLICK, DOUBLE_CLICK, RIGHT_CLICK, TYPE_TEXT, SET_VALUE, PRESS_KEY, HOTKEY, SCROLL.</p>
+backend = MacOSAXBackend(pid, max_elements=1200, max_depth=18, cache=False)</code></pre>
+    <p>Supports CLICK, DOUBLE_CLICK, RIGHT_CLICK, TYPE_TEXT, SET_VALUE, PRESS_KEY, HOTKEY, SCROLL. Reads only what is on screen. <code>cache=True</code> re-reads only elements the app reports as changed, so repeat observations take a few milliseconds.</p>
   </div>
 
   <div class="api-block">

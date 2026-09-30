@@ -6,6 +6,7 @@ import logging
 import re
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,7 @@ from ..errors import StaleDesktopState, TargetUnavailable, UnsupportedDesktopAct
 from ..keyboard import parse_hotkey
 from ..models import ActionKind, Bounds, DesktopElement, DesktopSnapshot, ExecutableAction
 from .macos_app import MacOSApp
+from .macos_ax_cache import AXChangeFeed, AXNode, AXNodeCache
 from .macos_background import window_id
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,7 @@ class MacOSAXBackend:
     perception source that can later be merged into the same DesktopSnapshot.
     """
 
-    def __init__(self, pid: int, *, max_elements: int = 1200, max_depth: int = 18) -> None:
+    def __init__(self, pid: int, *, max_elements: int = 1200, max_depth: int = 18, cache: bool = False) -> None:
         if sys.platform != "darwin":
             raise RuntimeError("MacOSAXBackend is only available on macOS")
         self.max_elements = max_elements
@@ -46,6 +48,8 @@ class MacOSAXBackend:
         self._full_tree_supported = True
         self._require_accessibility()
         self.app = MacOSApp(pid)
+        # Opt-in: re-read only elements the app reports as changed. See macos_ax_cache.
+        self._cache = AXNodeCache(AXChangeFeed(pid)) if cache else None
 
     @property
     def pid(self) -> int:
@@ -56,6 +60,9 @@ class MacOSAXBackend:
         self.app.open()
 
     def close(self) -> None:
+        if self._cache is not None:
+            self._cache.close()
+            self._cache = None
         self.app.close()
 
     def __enter__(self) -> MacOSAXBackend:
@@ -102,6 +109,9 @@ class MacOSAXBackend:
         elements: list[DesktopElement] = []
         visited: set[str] = set()
         window_bounds = _ax_bounds(AS, root)
+        if self._cache is not None:
+            cache = self._cache
+            cache.begin(AS, root, window_bounds, lambda ref: cache.role_of(ref) or str(_attr(AS, ref, "AXRole")))
         self._walk(AS, root, elements, refs, visited, parent_id=None, depth=0, clip=window_bounds)
         # Inline editors may sit outside the main window's AX subtree. Falling
         # back to the whole app also exposes hundreds of inactive menu items.
@@ -275,6 +285,7 @@ class MacOSAXBackend:
         parent_id: str | None,
         depth: int,
         clip: Bounds | None = None,
+        refresh: bool = False,
     ) -> None:
         """Walk what is on screen: `clip` is the visible area of the enclosing window
         and scroll areas. Elements with area outside it are skipped with their subtree;
@@ -286,34 +297,50 @@ class MacOSAXBackend:
             return
         visited.add(element_id)
 
-        attributes = copy_attributes(AS, ref, _ELEMENT_ATTRIBUTES)
-        role = str(attributes.get("AXRole") or "") if attributes is not None else ""
+        node, refresh = self._node(AS, ref, element_id, parent_id, refresh)
         if clip is not None:
-            bounds = _bounds_from_values(AS, attributes.get("AXPosition"), attributes.get("AXSize")) \
-                if attributes is not None else _ax_bounds(AS, ref)
+            bounds = node.bounds
             if depth > 0 and bounds is not None and bounds.width > 0 and bounds.height > 0 \
                     and not _overlaps(bounds, clip):
                 return
-            if depth == 0 or role in _CLIPPING_ROLES:
+            if depth == 0 or node.role in _CLIPPING_ROLES:
                 clip = _intersect(clip, bounds)
-        element = self._element_from_ref(ref, element_id, parent_id=parent_id, attributes=attributes)
+        element = node.element
         next_parent = parent_id
         if element is not None:
             elements.append(element)
             refs[element.id] = ref
             next_parent = element.id
 
-        children = _visible_rows(AS, ref) if role in _LIST_ROLES else None
-        if children is None:
-            children = (attributes.get("AXChildren") if attributes is not None else _attr(AS, ref, "AXChildren")) or []
-        try:
-            iterable = list(children)
-        except TypeError:
-            iterable = []
-        for child in iterable:
+        for child in node.children:
             if len(elements) >= self.max_elements:
                 break
-            self._walk(AS, child, elements, refs, visited, parent_id=next_parent, depth=depth + 1, clip=clip)
+            self._walk(AS, child, elements, refs, visited, parent_id=next_parent, depth=depth + 1,
+                       clip=clip, refresh=refresh)
+
+    def _node(self, AS: Any, ref: Any, element_id: str, parent_id: str | None, refresh: bool) -> tuple[AXNode, bool]:
+        """The element's node, from the cache when it is unchanged; and whether its
+        subtree must be read again."""
+        cache = self._cache
+        if cache is not None and not refresh:
+            # Re-fetch the children (attributes=None) to compare with the cached list.
+            node, refresh = cache.lookup(ref, lambda cached: _children(AS, ref, cached.role, None))
+            if node is not None:
+                if node.element is not None and node.element.parent_id != parent_id:
+                    node.element = replace(node.element, parent_id=parent_id)
+                return node, False
+        node = self._read_node(AS, ref, element_id, parent_id)
+        if cache is not None:
+            cache.store(ref, node)
+        return node, refresh
+
+    def _read_node(self, AS: Any, ref: Any, element_id: str, parent_id: str | None) -> AXNode:
+        attributes = copy_attributes(AS, ref, _ELEMENT_ATTRIBUTES)
+        role = str(attributes.get("AXRole") or "") if attributes is not None else ""
+        bounds = _bounds_from_values(AS, attributes.get("AXPosition"), attributes.get("AXSize")) \
+            if attributes is not None else _ax_bounds(AS, ref)
+        element = self._element_from_ref(ref, element_id, parent_id=parent_id, attributes=attributes)
+        return AXNode(attributes, role, bounds, element, _children(AS, ref, role, attributes))
 
     def _request_full_tree(self, AS: Any, app_ref: Any) -> None:
         """Ask Electron/Chromium apps to expose their full tree. They build it only for
@@ -461,6 +488,18 @@ _LIST_ROLES = {"AXTable", "AXOutline", "AXList", "AXBrowser", "AXGrid"}
 # Elements whose descendants are clipped to their bounds.
 _CLIPPING_ROLES = {"AXScrollArea", "AXWebArea"}
 _AX_ATTRIBUTE_UNSUPPORTED = -25205
+
+
+def _children(AS: Any, ref: Any, role: str, attributes: dict[str, Any] | None) -> list[Any]:
+    """The children the walk follows: visible rows for lists, otherwise AXChildren,
+    fetched again when no attributes are given."""
+    children = _visible_rows(AS, ref) if role in _LIST_ROLES else None
+    if children is None:
+        children = attributes.get("AXChildren") if attributes is not None else _attr(AS, ref, "AXChildren")
+    try:
+        return list(children or [])
+    except TypeError:
+        return []
 
 
 def _visible_rows(AS: Any, ref: Any) -> list[Any] | None:

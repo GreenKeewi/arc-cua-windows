@@ -57,6 +57,7 @@ def test_traversal_does_not_drop_siblings_with_reused_wrapper_addresses(monkeypa
     left, right = Ref("left"), Ref("right")
     root = Ref("root", AXChildren=[left, right, Ref("left")])
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend.max_depth = 10
     backend.max_elements = 10
     backend._identities = macos_ax._AXIdentityRegistry()
@@ -118,6 +119,7 @@ def test_context_menu_is_not_an_ordinary_click_capability(monkeypatch):
     monkeypatch.setattr(macos_ax, "_action_names", lambda *args: {"AXShowMenu"})
     monkeypatch.setattr(macos_ax, "_ax_bounds", lambda *args: Bounds(10, 20, 30, 40))
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     element = backend._element_from_ref(object(), "target", None)
     assert ActionKind.CLICK not in element.actions
     assert element.actions == (ActionKind.RIGHT_CLICK,)
@@ -131,6 +133,7 @@ def test_click_does_not_dispatch_context_menu(monkeypatch):
     bounds = Bounds(10, 20, 30, 40)
     monkeypatch.setattr(macos_ax, "_ax_bounds", lambda *args: bounds)
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend.app = fake_app()
     backend._click_at = lambda bounds, **kw: pointer.append((bounds, kw))
     backend._refs = {"target": object()}
@@ -155,6 +158,7 @@ def test_freshness_rejects_item_replaced_by_same_name_at_a_different_url():
     current = DesktopElement(id="item", role="TextField", value="report.pdf",
                              metadata={"url": "file:///second/report.pdf"})
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend._refs = {"item": object()}
     backend.app = fake_app()
     backend._element_from_ref = lambda *args, **kwargs: current
@@ -182,6 +186,7 @@ def test_only_real_text_editors_offer_value_entry(monkeypatch, focused, settable
     monkeypatch.setattr(macos_ax, "_action_names", lambda *args: set())
     monkeypatch.setattr(macos_ax, "_ax_bounds", lambda *args: None)
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend.app = fake_app()
     backend._refs = {"target": object()}
     backend.is_fresh = lambda *args: True
@@ -208,6 +213,7 @@ def test_observe_uses_a_window_on_this_desktop_not_the_focused_one_elsewhere(mon
     ids = {"elsewhere": 7, "here": 1}
     monkeypatch.setattr(macos_ax, "window_id", lambda ref: ids.get(getattr(ref, "identity", None)))
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend.app = fake_app(ax=app)
     backend.max_depth, backend.max_elements = 10, 10
     backend._identities = macos_ax._AXIdentityRegistry()
@@ -225,6 +231,7 @@ def test_observe_fails_clearly_when_the_app_has_no_usable_window(monkeypatch):
         raise TargetUnavailable("Editor has no open window on this desktop.")
 
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend.app = fake_app(windows=lambda: [], require_window=no_window)
     monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
     with pytest.raises(TargetUnavailable, match="no open window"):
@@ -236,6 +243,7 @@ def test_freshness_fails_clearly_once_the_app_quits():
         raise TargetUnavailable("Editor (process ID 123) quit.")
 
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend.app = fake_app(check_running=quit)
     snapshot = DesktopSnapshot(application="Editor", window="Doc", revision="1", elements=(), context={"pid": 123})
     with pytest.raises(TargetUnavailable, match="quit"):
@@ -251,6 +259,7 @@ def walk_tree(monkeypatch, root, *, clip):
     monkeypatch.setattr(macos_ax, "_bounds_from_values",
                         lambda api, pos, size: Bounds(*pos, *size) if pos and size else None)
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend.max_depth, backend.max_elements = 10, 100
     backend._identities = macos_ax._AXIdentityRegistry()
     backend._element_from_ref = lambda ref, identity, **kw: DesktopElement(id=identity, role="Group", name=ref.identity)
@@ -305,6 +314,7 @@ def test_settable_is_queried_only_for_elements_with_a_value(monkeypatch, value, 
     monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
     monkeypatch.setattr(macos_ax, "_bounds_from_values", lambda *args: None)
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     attributes = {name: None for name in macos_ax._ELEMENT_ATTRIBUTES} | {"AXRole": "AXStaticText", "AXValue": value}
     backend._element_from_ref(Ref("text"), "ax_1", parent_id=None, attributes=attributes)
     assert (calls == ["AXValue"]) is queried
@@ -318,8 +328,112 @@ def test_full_tree_request_stops_for_apps_that_do_not_support_it():
         return macos_ax._AX_ATTRIBUTE_UNSUPPORTED
 
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
     backend._full_tree_supported = True
     api = SimpleNamespace(AXUIElementSetAttributeValue=set_attribute)
     backend._request_full_tree(api, Ref("app"))
     backend._request_full_tree(api, Ref("app"))
     assert calls == ["AXManualAccessibility"]
+
+
+class FakeFeed:
+    available = True
+
+    def __init__(self):
+        self.changes = []
+
+    def drain(self):
+        changes, self.changes = self.changes, []
+        return changes
+
+    def close(self):
+        pass
+
+
+def cached_backend(monkeypatch):
+    """A backend with the cache on, over fake refs; returns (backend, feed, reads)."""
+    from arc_cua.backends.macos_ax_cache import AXNodeCache
+
+    install_cf(monkeypatch)
+    reads = []
+
+    def copy(api, ref, names):
+        if "AXRole" in names:
+            reads.append(ref.identity)
+        return {name: ref.attributes.get(name) for name in names}
+
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name))
+    monkeypatch.setattr(macos_ax, "copy_attributes", copy)
+    monkeypatch.setattr(macos_ax, "_bounds_from_values",
+                        lambda api, pos, size: Bounds(*pos, *size) if pos and size else None)
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.max_depth, backend.max_elements = 10, 100
+    backend._identities = macos_ax._AXIdentityRegistry()
+    backend._element_from_ref = lambda ref, identity, **kw: DesktopElement(
+        id=identity, role="Group", name=ref.identity, value=ref.attributes.get("AXValue"),
+    )
+    feed = FakeFeed()
+    backend._cache = AXNodeCache(feed)
+    return backend, feed, reads
+
+
+def cached_observe(backend, root, window=Bounds(0, 0, 100, 100)):
+    backend._identities.begin_observation()
+    backend._cache.begin(None, root, window, lambda ref: ref.attributes.get("AXRole", ""))
+    elements = []
+    backend._walk(None, root, elements, {}, set(), parent_id=None, depth=0, clip=window)
+    return {element.name: element.value for element in elements}
+
+
+def test_cache_reads_nothing_again_when_nothing_changed(monkeypatch):
+    backend, feed, reads = cached_backend(monkeypatch)
+    field = Ref("field", AXRole="AXTextField", AXValue="a", **box(10, 10, 20, 20))
+    root = Ref("window", AXRole="AXWindow", AXChildren=[field], **box(0, 0, 100, 100))
+    cached_observe(backend, root)
+    reads.clear()
+    assert cached_observe(backend, root) == {"window": None, "field": "a"}
+    assert reads == ["window"]  # the window is always re-read, for its title
+
+
+def test_cache_rereads_an_element_the_app_reports_changed(monkeypatch):
+    backend, feed, reads = cached_backend(monkeypatch)
+    field = Ref("field", AXRole="AXTextField", AXValue="a", **box(10, 10, 20, 20))
+    other = Ref("other", AXRole="AXButton", **box(40, 10, 20, 20))
+    root = Ref("window", AXRole="AXWindow", AXChildren=[field, other], **box(0, 0, 100, 100))
+    cached_observe(backend, root)
+    field.attributes["AXValue"] = "b"
+    feed.changes.append((field, "AXValueChanged"))
+    reads.clear()
+    assert cached_observe(backend, root)["field"] == "b"
+    assert sorted(reads) == ["field", "window"]
+
+
+def test_cache_finds_children_added_without_a_notification(monkeypatch):
+    backend, feed, reads = cached_backend(monkeypatch)
+    group = Ref("group", AXRole="AXGroup", AXChildren=[], **box(10, 10, 50, 50))
+    root = Ref("window", AXRole="AXWindow", AXChildren=[group], **box(0, 0, 100, 100))
+    cached_observe(backend, root)
+    group.attributes["AXChildren"] = [Ref("spinner", AXRole="AXImage", **box(20, 20, 10, 10))]
+    assert "spinner" in cached_observe(backend, root)
+
+
+def test_cache_rereads_scrolled_content_when_the_scroll_bar_moves(monkeypatch):
+    backend, feed, reads = cached_backend(monkeypatch)
+    bar = Ref("bar", AXRole="AXScrollBar", AXValue=0.0, **box(90, 0, 10, 50))
+    row = Ref("row", AXRole="AXStaticText", AXValue="first", **box(10, 10, 50, 10))
+    scroll = Ref("scroll", AXRole="AXScrollArea", AXChildren=[row, bar], **box(0, 0, 100, 50))
+    root = Ref("window", AXRole="AXWindow", AXChildren=[scroll], **box(0, 0, 100, 100))
+    cached_observe(backend, root)
+    row.attributes["AXValue"] = "second"  # content scrolled; only the bar announces it
+    feed.changes.append((bar, "AXValueChanged"))
+    assert cached_observe(backend, root)["row"] == "second"
+
+
+def test_cache_starts_over_when_the_window_moves(monkeypatch):
+    backend, feed, reads = cached_backend(monkeypatch)
+    root = Ref("window", AXRole="AXWindow", AXChildren=[Ref("button", AXRole="AXButton", **box(10, 10, 5, 5))],
+               **box(0, 0, 100, 100))
+    cached_observe(backend, root)
+    reads.clear()
+    cached_observe(backend, root, window=Bounds(500, 0, 100, 100))
+    assert sorted(reads) == ["button", "window"]
