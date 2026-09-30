@@ -314,14 +314,15 @@ class ChoicePolicy:
         candidate_maps: dict[str, dict[str, Any]] = {}
         truncation: dict[str, int] = {}
 
-        targeted_kinds = {
+        # A tuple, not a set: its order is the order of the target questions in the request.
+        targeted_kinds = (
             ActionKind.CLICK,
             ActionKind.DOUBLE_CLICK,
             ActionKind.RIGHT_CLICK,
             ActionKind.TYPE_TEXT,
             ActionKind.DRAG_TO,
             ActionKind.SET_VALUE,
-        }
+        )
 
         for kind, elements in elements_by_kind.items():
             if kind == ActionKind.SET_VALUE and not subtask.inputs:

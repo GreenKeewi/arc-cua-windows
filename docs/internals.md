@@ -386,6 +386,23 @@ app's focused window can be on a different desktop. The settle thumbnail
 composites only the app's own windows, so the user's windows on top do not look
 like the app reacting.
 
+## Provider request golden files
+
+The request `TypeSafeJevPolicy` sends is the decision model's prompt. For four fixed
+observations (a browser form, a Finder list with a declared shortcut, a field with
+no inputs, and a case with risky controls, a secret input and history),
+`tests/test_golden_requests.py` rebuilds the exact JSON body and compares it with
+`tests/golden/jev_request_*.json` character for character, including the order of
+questions and candidates. Any change to rules, candidates, the element table or
+redaction therefore fails the test and shows up as a diff. After an intended
+change, regenerate the files and review the diff:
+
+```bash
+ARC_UPDATE_GOLDEN=1 python -m pytest tests/test_golden_requests.py
+```
+
+A further test checks that no golden file contains the secret input's value.
+
 ## Risky controls and secrets
 
 `arc_cua.safety` holds the risk vocabulary and redaction. A control's risk comes
