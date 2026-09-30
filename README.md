@@ -209,11 +209,14 @@ with ChromeBackend.launch("https://en.wikipedia.org") as backend:
   actions until they can actually receive a click.
 - **Native dropdowns, sliders and date inputs** use `SET_VALUE` with an
   agent-supplied input. A `<select>` lists its options in `metadata["options"]`.
+- **Status messages** in live regions (`role=status`, `role=alert`, `aria-live`)
+  are observed even when scrolled out of view, as a screen reader would announce
+  them, with `metadata["offscreen"] = true`. Completion checks can rely on them.
 - **JavaScript dialogs** (`alert`, `confirm`) appear as a dialog with OK and
   Cancel buttons. Links that open a new tab switch the backend to that tab.
 - **Speed.** Observing a 4,761-node Wikipedia article takes about 9 ms, and the
-  settle probe about 0.5 ms. JEV opened that article from the main page in 3.1 s
-  with two decisions.
+  settle probe about 0.5 ms. See [Provider comparison](#provider-comparison) for
+  end-to-end task times.
 
 `ChromeBackend.launch()` starts Chrome with a temporary profile; `connect()` opens a
 new tab in a Chrome started with `--remote-debugging-port`. `navigate(url)` is for
@@ -256,6 +259,13 @@ cannot show a different state than the model judged. Ordinary steps send no imag
 so only a completion costs an extra request. On macOS it is the window image OCR
 read, scaled to at most 1280 px on the longest side and encoded only when needed.
 JEV does not accept images, so `TypeSafeJevPolicy` does not offer this.
+
+`ChoicePolicy(transport, screenshot_steps=True)` goes further and attaches the
+snapshot's screenshot to every decision, for interfaces whose structure says little
+(canvases, charts, custom-drawn controls). The model still chooses only offered ids.
+Completion checks then already see the image, so no separate request is made.
+`ChromeBackend(capture_screenshots=True)` provides the viewport image; the macOS
+backend always does.
 
 **Confidence and margin thresholds.** `RuntimeConfig(min_confidence=0.6)` returns
 `NEEDS_AGENT` instead of acting, or completing, when a decision's confidence is
@@ -329,6 +339,22 @@ Change macOS appearance using Accessibility-heavy workflow:
 python examples/test_settings.py
 ```
 
+### Provider comparison
+
+`examples/compare_providers.py` runs the same browser tasks with every decision
+provider whose key is set and judges success from the page itself, not from the
+model's completion claim. JEV, 5 runs each, headless Chrome on an M-series Mac:
+
+| Task | Verified | Median time | Decisions | Median decision latency |
+|---|---|---|---|---|
+| Trip form: type a city, pick a cabin, tick a hidden checkbox, search (local) | 5/5 | 2.9 s | 5 | 273 ms |
+| Covered button: scroll, dismiss a cookie banner, click the button beneath (local) | 5/5 | 2.3 s | 5 | 306 ms |
+| Wikipedia: search and open an article (live site) | 5/5 | 2.0 s | 2 | 319 ms |
+
+```bash
+python examples/compare_providers.py --runs 5
+```
+
 ### Browser
 
 Run any subtask in Chrome:
@@ -343,7 +369,5 @@ python examples/browser_demo.py https://en.wikipedia.org \
 ---
 
 ## Roadmap
-
-Decision providers: an adapter for OpenAI's Decisions API (announced at DevDay 2026, in limited preview) will be added as a `ChoiceTransport` once its API is published.
 
 AX + OCR covers native and Electron desktop workflows. The next perception frontier is custom graphical interfaces — video timelines, CAD canvases, node graphs, spatial drag targets — which can be added as perception providers while keeping the same `DesktopElement` and execution interfaces.

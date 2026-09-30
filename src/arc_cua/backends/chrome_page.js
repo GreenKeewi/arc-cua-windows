@@ -372,17 +372,23 @@
         continue;
       }
       if (inside) { claimed.add(el); continue; }
-      if (role === "heading" || isTextBlock(el) || role === "alert" || role === "status") {
+      const live = role === "alert" || role === "status" || role === "log"
+        || ["polite", "assertive"].includes(el.getAttribute("aria-live"));
+      if (role === "heading" || isTextBlock(el) || live) {
         // A control's label is already its name.
         const label = el.closest("label");
         if (label && label.control) continue;
         const box = boxOf(el);
-        if (!inViewport(box) || !shown(el)) continue;
+        // Live regions (status messages, alerts) count wherever they are, as a
+        // screen reader would announce them; other text only when in view.
+        if (!(live || inViewport(box)) || !shown(el)) continue;
         claimed.add(el);
-        const name = role === "heading" || role === "alert" || role === "status" ? textFrom(el) : clean(el.innerText, 200);
+        const name = role === "heading" || live ? textFrom(el) : clean(el.innerText, 200);
         if (!name) continue;
         if (texts.length >= maxText) { skippedText++; continue; }
-        texts.push({ ...record(el, role || "text", box, { actions: [] }), name, value: null });
+        const rec = { ...record(el, role || (live ? "status" : "text"), box, { actions: [] }), name, value: null };
+        if (!inViewport(box)) rec.metadata.offscreen = true;
+        texts.push(rec);
       }
     }
     const scroller = document.scrollingElement || document.documentElement;

@@ -139,6 +139,8 @@ def test_screenshots_are_not_taken_for_ordinary_steps() -> None:
 
 def test_screenshots_require_a_provider_that_accepts_images() -> None:
     with pytest.raises(ValueError, match="Fake does not accept images"):
+        ChoicePolicy(FakeTransport({}), screenshot_steps=True)
+    with pytest.raises(ValueError, match="Fake does not accept images"):
         ChoicePolicy(FakeTransport({}), screenshot_checks=True)
     policy = TypeSafeJevPolicy(api_key="test")
     try:
@@ -150,7 +152,7 @@ def test_screenshots_require_a_provider_that_accepts_images() -> None:
 
 def test_completion_is_not_accepted_without_the_snapshot_pixels() -> None:
     transport = ImageTransport({"operation": "SUBTASK_COMPLETE", "verification_0": "SATISFIED"}, {})
-    with pytest.raises(RuntimeError, match="Snapshot has no screenshot"):
+    with pytest.raises(RuntimeError, match="Snapshot has no screenshot; no decision made"):
         ChoicePolicy(transport, screenshot_checks=True).decide(
             subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
         )
@@ -170,3 +172,15 @@ def test_margin_is_the_smallest_lead_among_the_answers_used() -> None:
         subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
     )
     assert decision.margin == pytest.approx(0.1)
+
+
+def test_screenshot_steps_attach_the_image_to_every_decision() -> None:
+    selections = {"operation": "SUBTASK_COMPLETE", "verification_0": "SATISFIED"}
+    transport = ImageTransport({}, selections)  # answers only requests that carry an image
+    decision = ChoicePolicy(transport, screenshot_steps=True, screenshot_checks=True).decide(
+        subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(lambda: b"png"), history=(),
+    )
+    # One request: the completion checks already saw the image.
+    assert decision.terminal == TerminalKind.SUBTASK_COMPLETE
+    assert transport.images == [(b"png",)]
+    assert "image of the window" in transport.calls[0][0]["image"]

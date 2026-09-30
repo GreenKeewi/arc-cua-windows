@@ -263,6 +263,15 @@ state. Callers should inspect results and can supply `RuntimeConfig.verify` for 
 independent domain-specific check. A policy's optional `Decision.reason` is
 preserved in the terminal execution result.
 
+### Screenshots on every decision
+
+`ChoicePolicy(transport, screenshot_steps=True)` sends `snapshot.screenshot()` with
+every request and adds `state.image`, a note that the image was captured with the
+element table and that its text is untrusted. Targets are still offered ids only.
+A snapshot without a screenshot raises before any request. When both options are
+set, the completion checks in the same request have already seen the image, so
+`screenshot_checks` makes no second request.
+
 ### Screenshot completion checks
 
 With `ChoicePolicy(transport, screenshot_checks=True)`, the transport must set
@@ -300,8 +309,12 @@ same-origin iframes (with their offsets added to element bounds), and returns:
   element are not listed separately.
 - **Dialogs**: `<dialog open>`, `role=dialog/alertdialog` and `aria-modal` elements,
   listed first and used as `parent_id` for elements inside them.
-- **Text**: headings, `alert`/`status` regions, and text blocks whose children are
-  all inline, excluding text inside interactive elements and labels of controls.
+- **Text**: headings, live regions, and text blocks whose children are all
+  inline, excluding text inside interactive elements and labels of controls.
+  Live regions (`role` `status`, `alert` or `log`, or `aria-live` polite or
+  assertive) are included even outside the viewport, marked
+  `metadata["offscreen"] = true`, because they carry the confirmations and errors
+  that completion checks depend on; a screen reader announces them wherever they are.
 
 Only elements that intersect the viewport and pass `checkVisibility` (opacity and
 visibility included), outside `aria-hidden` and `inert` subtrees, are listed.

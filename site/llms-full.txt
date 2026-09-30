@@ -565,7 +565,8 @@ metadata["covered"] = True. `<select>`, range and date inputs use SET_VALUE with
 agent input matching an option label or value; a select's options are in
 metadata["options"]. JavaScript dialogs appear as dialog_message plus
 dialog_accept/dialog_dismiss buttons. A link that opens a new tab switches the
-backend to it. context has url, title, viewport, scroll, more_above, more_below.
+backend to it. Live regions (role status/alert/log, aria-live) are included even
+when scrolled away, with metadata["offscreen"] = True. context has url, title, viewport, scroll, more_above, more_below.
 Not supported: cross-origin iframes, closed shadow roots, file uploads, drag and
 drop, browser UI.
 
@@ -625,6 +626,7 @@ policy = ChoicePolicy(
     TypeSafeTransport(),
     max_candidates=240,
     screenshot_checks=False,  # needs transport.supports_images and snapshot.screenshot
+    screenshot_steps=False,   # attach snapshot.screenshot() to every decision
 )
 ```
 
@@ -753,7 +755,8 @@ same questions, validation and runtime:
 ```python
 class MyTransport:
     name = "MyProvider"     # shown in invalid-response errors
-    supports_images = True  # optional; required for screenshot_checks=True
+    supports_images = True  # optional; required for screenshot_checks/screenshot_steps
+    full_distribution = True  # False: answers may carry only choice + confidence (margin is then None)
 
     def ask(self, state, questions, *, images=()):
         # images: PNG bytes, only sent for screenshot completion checks

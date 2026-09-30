@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from arc_cua import DesktopExecutor, RuntimeConfig, Subtask
+from arc_cua import DesktopExecutor, Subtask
 from arc_cua.backends import ChromeBackend
 from arc_cua.policies import TypeSafeJevPolicy
 
@@ -39,13 +39,15 @@ def main() -> None:
         max_actions=args.max_actions,
     )
     with ChromeBackend.launch(args.url, headless=args.headless) as backend:
-        executor = DesktopExecutor(backend, TypeSafeJevPolicy(), config=RuntimeConfig(min_confidence=0.5))
+        executor = DesktopExecutor(backend, TypeSafeJevPolicy())
         started = time.perf_counter()
+        decided_on = backend.observe()  # action events carry the snapshot after the action
         for event in executor.run_iter(task):
             decision = event.decision
             label = decision.kind.value if decision.kind else decision.terminal.value
-            target = event.snapshot.element(decision.target_id).name if decision.target_id else ""
+            target = decided_on.element(decision.target_id).name if decision.target_id else ""
             print(f"{time.perf_counter() - started:6.2f}s  {label:<16} {target[:40]!r}")
+            decided_on = event.snapshot
             if event.result:
                 print(f"\n{event.result.status.value}", event.result.reason or "")
 

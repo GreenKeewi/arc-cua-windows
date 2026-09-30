@@ -142,6 +142,9 @@ def test_covered_elements_are_not_offered_until_uncovered(page):
     result = run(page, [(ActionKind.CLICK, "Accept cookies", {}), (ActionKind.CLICK, "Bottom button", {})])
     assert result.status == TerminalKind.SUBTASK_COMPLETE, result.reason
     assert status(page) == "Bottom reached"
+    # The status message at the top of the page is still observed while scrolled away.
+    message = named(page.observe(), "Bottom reached")
+    assert (message.role, message.metadata.get("offscreen")) == ("status", True)
 
 
 def test_javascript_dialog_is_observable_and_answerable(page):
