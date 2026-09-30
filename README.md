@@ -1,6 +1,6 @@
 # arc-cua
 
-**Superfast action layer for computer-use agents.**
+**Superfast action layer for computer-use agents, powered by decision models.**
 
 > Built by [Isle](https://tryisle.com) — managed desktop environments for computer-use agents.
 

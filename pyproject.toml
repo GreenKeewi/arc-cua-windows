@@ -1,7 +1,7 @@
 [project]
 name = "arc-cua"
 version = "0.1.0"
-description = "LLM-agnostic low-latency execution runtime for desktop computer-use agents"
+description = "Superfast action layer for computer-use agents, powered by decision models"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}

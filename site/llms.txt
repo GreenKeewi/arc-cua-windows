@@ -1,6 +1,6 @@
 # arc-cua
 
-> Superfast action layer for computer-use agents.
+> Superfast action layer for computer-use agents, powered by decision models.
 
 arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model (JEV) that executes the UI loop. No frontier model needed for every click. Built by Isle.
 
