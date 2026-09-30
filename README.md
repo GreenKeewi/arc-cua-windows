@@ -182,6 +182,18 @@ repeated request data without discarding element facts or changing the offered c
 Provider token-limit failures include `max_tokens_exceeded` in the returned error;
 no UI action is executed for a failed decision request.
 
+**Accessibility only.** For apps that describe themselves well to accessibility,
+`MacOSAXBackend` needs no screenshots, OCR or Screen Recording permission: it
+settles on the app's accessibility notifications instead of screen thumbnails. The
+walk reads only what is on screen, meaning the visible rows of lists and tables and
+elements inside the window and its scroll areas, so a Finder list of 2,000 files
+observes in about 50 ms. Electron and other Chromium-based apps are asked for their
+full accessibility tree. `MacOSAXBackend(pid, cache=True)` also keeps elements
+between observations and re-reads only what the app reports as changed, so repeat
+observations take a few milliseconds; values an app changes without notifying can
+be briefly stale, which is why it is opt-in. Use `MacOSHybridBackend` for apps with
+little accessibility, where OCR supplies the visible text.
+
 ### Background control on macOS
 
 `MacOSHybridBackend` and `MacOSAXBackend` act on one app, given by its process ID,
