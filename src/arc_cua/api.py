@@ -34,6 +34,7 @@ def result_to_dict(result: ExecutionResult) -> dict[str, Any]:
         "status": result.status.value,
         "actions_taken": result.actions_taken,
         "reason": result.reason,
+        "needs_input": dict(result.needs_input) if result.needs_input else None,
         "observations": list(result.observations),
         "history": [record.compact() for record in result.history],
         "final_snapshot": result.final_snapshot.compact(),

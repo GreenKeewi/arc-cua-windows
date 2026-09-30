@@ -151,6 +151,7 @@ def result_line(result: ExecutionResult) -> dict[str, Any]:
         "type": "result",
         "status": result.status.value,
         "reason": result.reason,
+        "needs_input": dict(result.needs_input) if result.needs_input else None,
         "actions_taken": result.actions_taken,
         "observations": list(result.observations),
         "application": result.final_snapshot.application,

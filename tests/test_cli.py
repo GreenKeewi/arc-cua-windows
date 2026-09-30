@@ -115,3 +115,12 @@ def test_command_keeps_logs_off_standard_output():
     assert completed.returncode == 2
     assert [json.loads(line)["type"] for line in completed.stdout.splitlines()] == ["error"]
     assert "not valid JSON" in completed.stderr
+
+
+def test_needs_input_is_a_result_naming_the_field(monkeypatch):
+    code, lines, _ = run(monkeypatch, REQUEST, decisions=[
+        Decision(terminal=TerminalKind.NEEDS_INPUT, target_id="search", reason="needs text"),
+    ])
+    assert code == 0
+    assert lines[-1]["status"] == "NEEDS_INPUT"
+    assert lines[-1]["needs_input"] == {"element_id": "search", "role": "TextField", "name": "Search", "value": ""}

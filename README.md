@@ -80,7 +80,7 @@ any planner / CUA
 +-----------+-----------+
             |
             v
-SUBTASK_COMPLETE / BLOCKED / NEEDS_AGENT
+SUBTASK_COMPLETE / BLOCKED / NEEDS_AGENT / NEEDS_INPUT
             |
             v
          planner
@@ -113,6 +113,8 @@ See [the extension guide](site/llms-full.txt) for the request and answer shapes.
 ### The agent owns intent
 
 The upstream agent decides what needs to happen, what literal text may be used, what must not happen, and what counts as success. JEV chooses which element to target and which operation to perform — but never invents arbitrary text. Literal values always originate from the agent via `inputs`.
+
+When a field needs a value that none of the `inputs` provides, the run stops with `NEEDS_INPUT` instead of typing something else. The result's `needs_input` describes the field (`element_id`, `role`, `name`, current `value`, and a dropdown's `options`), so the agent can add the value to `inputs` and run the subtask again. Text fields are offered even when no inputs are supplied, only so the model can ask this way.
 
 ### Caller-supplied shortcuts
 
@@ -259,7 +261,7 @@ and exits:
 
 ```text
 {"type": "action", "step": 1, "action": "SET_VALUE", "target": "ax_3", "target_name": "", "value": "Hello", "state_changed": true, "confidence": 0.48, ...}
-{"type": "result", "status": "SUBTASK_COMPLETE", "reason": null, "actions_taken": 1, "application": "TextEdit", "window": "Untitled", ...}
+{"type": "result", "status": "SUBTASK_COMPLETE", "reason": null, "needs_input": null, "actions_taken": 1, "application": "TextEdit", "window": "Untitled", ...}
 ```
 
 Action lines carry the same fields as a history record in `result_to_dict`. The
@@ -332,6 +334,7 @@ The hybrid macOS backend settles on a cheap visual probe: the target app's front
 | `SUBTASK_COMPLETE` | Verification criteria appear satisfied |
 | `BLOCKED` | Cannot make progress with available operations |
 | `NEEDS_AGENT` | Higher-level reasoning required or action budget reached |
+| `NEEDS_INPUT` | A field needs a value none of the `inputs` provides; `needs_input` names the field |
 
 The caller owns overall task completion.
 

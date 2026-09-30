@@ -468,3 +468,12 @@ def test_near_tie_returns_needs_agent_without_acting() -> None:
     assert result.status == TerminalKind.NEEDS_AGENT
     assert backend.state["value"] == ""
     assert "margin 0.02 for TYPE_TEXT is below min_margin 0.10" in result.reason
+
+
+def test_needs_input_reports_the_field_without_acting() -> None:
+    backend = StateMachineBackend({"value": ""}, snapshot, transition)
+    policy = ScriptedPolicy([Decision(terminal=TerminalKind.NEEDS_INPUT, target_id="search", reason="needs text")])
+    result = DesktopExecutor(backend, policy).run(Subtask(goal="Search", verification=("Searched",)))
+    assert result.status == TerminalKind.NEEDS_INPUT
+    assert result.actions_taken == 0
+    assert result.needs_input == {"element_id": "search", "role": "text_field", "name": "Search", "value": ""}

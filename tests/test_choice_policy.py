@@ -184,3 +184,31 @@ def test_screenshot_steps_attach_the_image_to_every_decision() -> None:
     assert decision.terminal == TerminalKind.SUBTASK_COMPLETE
     assert transport.images == [(b"png",)]
     assert "image of the window" in transport.calls[0][0]["image"]
+
+
+def field_snapshot() -> DesktopSnapshot:
+    return DesktopSnapshot(application="Mail", window="New Message", revision="1", elements=(
+        DesktopElement(id="to", role="TextField", name="To", value="",
+                       actions=(ActionKind.CLICK, ActionKind.TYPE_TEXT)),
+    ))
+
+
+def test_no_fitting_input_hands_back_for_that_field() -> None:
+    transport = FakeTransport({"operation": "TYPE_TEXT", "type_text_target": "to", "type_text_input": "NONE"})
+    decision = ChoicePolicy(transport).decide(
+        subtask=Subtask(goal="Email Sam", verification=("Sent",), inputs={"subject": "Lunch"}),
+        snapshot=field_snapshot(), history=(),
+    )
+    assert decision.terminal == TerminalKind.NEEDS_INPUT
+    assert decision.target_id == "to"
+    assert "none of the supplied inputs" in decision.reason
+
+
+def test_text_fields_are_offered_without_inputs_only_to_ask_for_text() -> None:
+    transport = FakeTransport({"operation": "NEEDS_AGENT"})
+    ChoicePolicy(transport).decide(
+        subtask=Subtask(goal="Email Sam", verification=("Sent",)), snapshot=field_snapshot(), history=(),
+    )
+    questions = transport.calls[0][1]
+    assert "TYPE_TEXT" in questions["operation"]["criteria"]
+    assert set(questions["type_text_input"]["criteria"]) == {"NONE"}

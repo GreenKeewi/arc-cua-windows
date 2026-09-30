@@ -29,6 +29,7 @@ class TerminalKind(StrEnum):
     SUBTASK_COMPLETE = "SUBTASK_COMPLETE"
     BLOCKED = "BLOCKED"
     NEEDS_AGENT = "NEEDS_AGENT"
+    NEEDS_INPUT = "NEEDS_INPUT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +323,8 @@ class ExecutionResult:
     history: tuple[ActionRecord, ...]
     observations: tuple[str, ...] = ()
     reason: str | None = None
+    # For NEEDS_INPUT: the field that needs a value none of the inputs provides.
+    needs_input: Mapping[str, Any] | None = None
 
     @property
     def actions_taken(self) -> int:

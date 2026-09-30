@@ -322,6 +322,7 @@ class DesktopExecutor:
                         history=tuple(history),
                         observations=_terminal_observations(decision.terminal, subtask),
                         reason=decision.reason,
+                        needs_input=_requested_field(decision, snapshot),
                     )
                 logger.debug("terminal step=%d status=%s", step, result.status.value)
                 yield StepEvent(step=step, snapshot=snapshot, decision=decision, result=result)
@@ -469,6 +470,24 @@ def _structural_signature(
             )
 
     return tuple(sorted(rows))
+
+
+def _requested_field(decision: Decision, snapshot: DesktopSnapshot) -> dict[str, Any] | None:
+    """Describe the field a NEEDS_INPUT decision asks a value for."""
+    if decision.terminal != TerminalKind.NEEDS_INPUT:
+        return None
+    try:
+        element = snapshot.element(decision.target_id) if decision.target_id else None
+    except KeyError:
+        element = None
+    if element is None:
+        return {"element_id": decision.target_id}
+    field: dict[str, Any] = {
+        "element_id": element.id, "role": element.role, "name": element.name, "value": element.value,
+    }
+    if "options" in element.metadata:
+        field["options"] = list(element.metadata["options"])
+    return field
 
 
 def _terminal_observations(status: TerminalKind, subtask: Subtask) -> tuple[str, ...]:

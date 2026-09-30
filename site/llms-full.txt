@@ -114,7 +114,7 @@ planner / LLM
 +------------+-----------+
              |
              v
-  SUBTASK_COMPLETE / BLOCKED / NEEDS_AGENT
+  SUBTASK_COMPLETE / BLOCKED / NEEDS_AGENT / NEEDS_INPUT
              |
              v
           planner
@@ -208,6 +208,7 @@ UI operations the executor can perform:
 | SUBTASK_COMPLETE | Verification criteria appear satisfied |
 | BLOCKED | Cannot make progress with available operations |
 | NEEDS_AGENT | Higher-level reasoning required or action budget reached |
+| NEEDS_INPUT | A field needs a value none of the inputs provides; ExecutionResult.needs_input names it |
 
 TypeSafeJevPolicy asks a separate choice head for each verification criterion.
 A proposed SUBTASK_COMPLETE becomes NEEDS_AGENT, with an explanatory reason, if
@@ -363,6 +364,7 @@ class ExecutionResult:
     history: tuple[ActionRecord, ...]
     observations: tuple[str, ...] = ()
     reason: str | None = None
+    needs_input: Mapping[str, Any] | None = None  # NEEDS_INPUT: element_id, role, name, value, options
 
     @property
     def actions_taken(self) -> int: ...
@@ -457,7 +459,7 @@ When set on RuntimeConfig, called before accepting SUBTASK_COMPLETE. If it retur
 10. Loop
 
 Termination conditions:
-- Policy returns terminal decision (SUBTASK_COMPLETE, BLOCKED, NEEDS_AGENT)
+- Policy returns terminal decision (SUBTASK_COMPLETE, BLOCKED, NEEDS_AGENT, NEEDS_INPUT)
 - Verification callback rejects completion -> NEEDS_AGENT
 - Decision confidence below min_confidence, or margin below min_margin -> NEEDS_AGENT
 - Action budget exhausted -> NEEDS_AGENT
@@ -512,7 +514,7 @@ app and exits. Standard input: one JSON object.
 
 Standard output: one JSON line per executed action,
 `{"type": "action", ...ActionRecord.compact(), "confidence", "margin"}`, then
-`{"type": "result", "status", "reason", "actions_taken", "observations", "application", "window"}`,
+`{"type": "result", "status", "reason", "needs_input", "actions_taken", "observations", "application", "window"}`,
 exit code 0. If no result can be produced, the last line is
 `{"type": "error", "error": str}`: exit code 2 for invalid input, 1 otherwise (app
 quit or has no usable window, missing permission, provider failure). Logs go to

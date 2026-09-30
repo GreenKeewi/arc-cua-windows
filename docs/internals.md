@@ -271,6 +271,14 @@ JEV's selected chord is validated against that request's choices, and `materiali
 
 Literal text always originates from the upstream agent.
 
+The `type_text_input` and `set_value_input` questions offer each supplied input plus
+`NONE`: none of the supplied values belongs in this field. Choosing `NONE` ends the
+run with `NEEDS_INPUT`; `ExecutionResult.needs_input` holds the chosen field's id,
+role, name, current value and, for dropdowns, options. `TYPE_TEXT` is offered even
+without inputs, when its only input option is `NONE`, so the model can ask for text
+instead of stopping with a generic `NEEDS_AGENT`. `SET_VALUE` is still offered only
+for controls that can take one of the supplied values.
+
 For AX text controls, a writable `AXValue` alone is insufficient: the control must
 also support focus or editable text selection, or already hold focus. Some item
 labels advertise writable values that change only the display, not the underlying
