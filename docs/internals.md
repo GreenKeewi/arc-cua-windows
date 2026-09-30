@@ -79,6 +79,29 @@ Control bounds are decoded from AXValue geometry. `CLICK` invokes `AXPress` when
 available or uses the control's current bounds; `AXShowMenu` is not treated as a
 left click. Exposed double-click and right-click operations use current geometry.
 
+### Traversal cost
+
+Each attribute read is a request the target app answers on its main thread, so an
+observation costs roughly one batched attribute read per visited element. The walk
+therefore visits only what is on screen:
+
+- Lists, tables, outlines and browsers contribute their header and `AXVisibleRows`
+  (or `AXVisibleChildren`) instead of every row. Columns are skipped; they contain
+  the same cells as the rows. Web areas answer `AXVisibleRows` with an empty list,
+  so the rule applies to those list roles only.
+- Elements whose bounds lie outside the window, or outside an enclosing scroll or
+  web area, are skipped with their subtree. Zero-size elements are never skipped,
+  because web content can overflow a zero-size wrapper.
+- An element without a value is not asked whether its value is settable.
+
+In a Finder list of 2,000 files, an observation reads the 19 visible rows instead of
+walking every row, and takes about 50 ms instead of about 30 s.
+
+Electron and other Chromium-based apps build their accessibility tree only for
+clients that request it, and discard it again later. Each observation sets
+`AXManualAccessibility` on the app; apps that do not support the attribute are not
+asked again.
+
 ---
 
 ## Local Apple Vision OCR

@@ -211,6 +211,7 @@ def test_observe_uses_a_window_on_this_desktop_not_the_focused_one_elsewhere(mon
     backend.app = fake_app(ax=app)
     backend.max_depth, backend.max_elements = 10, 10
     backend._identities = macos_ax._AXIdentityRegistry()
+    backend._full_tree_supported = True
     backend._element_from_ref = lambda ref, identity, **kw: DesktopElement(
         id=identity, role="Window", name=ref.identity,
     )
@@ -239,3 +240,86 @@ def test_freshness_fails_clearly_once_the_app_quits():
     snapshot = DesktopSnapshot(application="Editor", window="Doc", revision="1", elements=(), context={"pid": 123})
     with pytest.raises(TargetUnavailable, match="quit"):
         backend.is_fresh(snapshot, ExecutableAction(kind=ActionKind.PRESS_KEY, key="ENTER"))
+
+
+def walk_tree(monkeypatch, root, *, clip):
+    """Walk fake refs whose attributes include plain (x, y) / (w, h) geometry."""
+    install_cf(monkeypatch)
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name))
+    monkeypatch.setattr(macos_ax, "copy_attributes",
+                        lambda api, ref, names: {name: ref.attributes.get(name) for name in names})
+    monkeypatch.setattr(macos_ax, "_bounds_from_values",
+                        lambda api, pos, size: Bounds(*pos, *size) if pos and size else None)
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.max_depth, backend.max_elements = 10, 100
+    backend._identities = macos_ax._AXIdentityRegistry()
+    backend._element_from_ref = lambda ref, identity, **kw: DesktopElement(id=identity, role="Group", name=ref.identity)
+    elements = []
+    backend._walk(None, root, elements, {}, set(), parent_id=None, depth=0, clip=clip)
+    return [element.name for element in elements]
+
+
+def box(x, y, w, h):
+    return {"AXPosition": (x, y), "AXSize": (w, h)}
+
+
+def test_walk_skips_elements_outside_the_window_but_not_zero_size_wrappers(monkeypatch):
+    inside = Ref("inside", AXRole="AXButton", **box(10, 10, 20, 20))
+    outside = Ref("outside", AXRole="AXGroup", AXChildren=[Ref("under-outside", **box(500, 500, 5, 5))],
+                  **box(400, 400, 50, 50))
+    overflowing = Ref("overflowing", AXRole="AXButton", **box(40, 40, 20, 20))
+    wrapper = Ref("wrapper", AXRole="AXGroup", AXChildren=[overflowing], **box(0, 0, 0, 0))
+    root = Ref("window", AXRole="AXWindow", AXChildren=[inside, outside, wrapper], **box(0, 0, 100, 100))
+    assert walk_tree(monkeypatch, root, clip=Bounds(0, 0, 100, 100)) == ["window", "inside", "wrapper", "overflowing"]
+
+
+def test_scroll_areas_clip_their_content(monkeypatch):
+    shown = Ref("shown", AXRole="AXButton", **box(10, 10, 20, 20))
+    scrolled_away = Ref("scrolled-away", AXRole="AXButton", **box(10, 60, 20, 20))
+    scroll = Ref("scroll", AXRole="AXScrollArea", AXChildren=[shown, scrolled_away], **box(0, 0, 100, 50))
+    root = Ref("window", AXRole="AXWindow", AXChildren=[scroll], **box(0, 0, 100, 100))
+    assert walk_tree(monkeypatch, root, clip=Bounds(0, 0, 100, 100)) == ["window", "scroll", "shown"]
+
+
+def test_lists_walk_their_header_and_visible_rows_only(monkeypatch):
+    rows = [Ref(f"row-{i}", AXRole="AXRow") for i in range(5)]
+    header = Ref("header", AXRole="AXGroup")
+    column = Ref("column", AXRole="AXColumn", AXChildren=rows)
+    table = Ref("table", AXRole="AXOutline", AXChildren=[*rows, column, header],
+                AXVisibleRows=rows[1:3], AXHeader=header)
+    # Web areas answer AXVisibleRows with an empty list; their children are used.
+    web = Ref("web", AXRole="AXWebArea", AXChildren=[Ref("link", AXRole="AXLink")], AXVisibleRows=[])
+    root = Ref("window", AXRole="AXWindow", AXChildren=[table, web])
+    assert walk_tree(monkeypatch, root, clip=None) == ["window", "table", "header", "row-1", "row-2", "web", "link"]
+
+
+@pytest.mark.parametrize(("value", "queried"), [(None, False), ("Draft", True)])
+def test_settable_is_queried_only_for_elements_with_a_value(monkeypatch, value, queried):
+    calls = []
+
+    def settable(ref, name, _):
+        calls.append(name)
+        return 0, False
+
+    api = SimpleNamespace(AXUIElementIsAttributeSettable=settable, AXUIElementCopyActionNames=lambda ref, _: (0, []))
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
+    monkeypatch.setattr(macos_ax, "_bounds_from_values", lambda *args: None)
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    attributes = {name: None for name in macos_ax._ELEMENT_ATTRIBUTES} | {"AXRole": "AXStaticText", "AXValue": value}
+    backend._element_from_ref(Ref("text"), "ax_1", parent_id=None, attributes=attributes)
+    assert (calls == ["AXValue"]) is queried
+
+
+def test_full_tree_request_stops_for_apps_that_do_not_support_it():
+    calls = []
+
+    def set_attribute(ref, name, value):
+        calls.append(name)
+        return macos_ax._AX_ATTRIBUTE_UNSUPPORTED
+
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._full_tree_supported = True
+    api = SimpleNamespace(AXUIElementSetAttributeValue=set_attribute)
+    backend._request_full_tree(api, Ref("app"))
+    backend._request_full_tree(api, Ref("app"))
+    assert calls == ["AXManualAccessibility"]

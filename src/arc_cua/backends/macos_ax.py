@@ -43,6 +43,7 @@ class MacOSAXBackend:
         self.max_depth = max_depth
         self._refs: dict[str, Any] = {}
         self._identities = _AXIdentityRegistry()
+        self._full_tree_supported = True
         self._require_accessibility()
         self.app = MacOSApp(pid)
 
@@ -79,6 +80,7 @@ class MacOSAXBackend:
         pid = self.app.pid
         app_name = self.app.name
         app_ref = self.app.ax
+        self._request_full_tree(AS, app_ref)
         focused = _attr(AS, app_ref, "AXFocusedUIElement")
         candidates = [
             _attr(AS, app_ref, "AXFocusedWindow"),
@@ -99,11 +101,12 @@ class MacOSAXBackend:
         refs: dict[str, Any] = {}
         elements: list[DesktopElement] = []
         visited: set[str] = set()
-        self._walk(AS, root, elements, refs, visited, parent_id=None, depth=0)
+        window_bounds = _ax_bounds(AS, root)
+        self._walk(AS, root, elements, refs, visited, parent_id=None, depth=0, clip=window_bounds)
         # Inline editors may sit outside the main window's AX subtree. Falling
         # back to the whole app also exposes hundreds of inactive menu items.
         if focused is not None:
-            self._walk(AS, focused, elements, refs, visited, parent_id=None, depth=0)
+            self._walk(AS, focused, elements, refs, visited, parent_id=None, depth=0, clip=window_bounds)
         self._refs = refs
         logger.debug("ax observe app=%r elements=%d", app_name, len(elements))
 
@@ -271,7 +274,11 @@ class MacOSAXBackend:
         *,
         parent_id: str | None,
         depth: int,
+        clip: Bounds | None = None,
     ) -> None:
+        """Walk what is on screen: `clip` is the visible area of the enclosing window
+        and scroll areas. Elements with area outside it are skipped with their subtree;
+        zero-size wrappers are not, since web content can overflow them."""
         if depth > self.max_depth or len(elements) >= self.max_elements:
             return
         element_id = self.identity_for(ref)
@@ -280,6 +287,15 @@ class MacOSAXBackend:
         visited.add(element_id)
 
         attributes = copy_attributes(AS, ref, _ELEMENT_ATTRIBUTES)
+        role = str(attributes.get("AXRole") or "") if attributes is not None else ""
+        if clip is not None:
+            bounds = _bounds_from_values(AS, attributes.get("AXPosition"), attributes.get("AXSize")) \
+                if attributes is not None else _ax_bounds(AS, ref)
+            if depth > 0 and bounds is not None and bounds.width > 0 and bounds.height > 0 \
+                    and not _overlaps(bounds, clip):
+                return
+            if depth == 0 or role in _CLIPPING_ROLES:
+                clip = _intersect(clip, bounds)
         element = self._element_from_ref(ref, element_id, parent_id=parent_id, attributes=attributes)
         next_parent = parent_id
         if element is not None:
@@ -287,7 +303,9 @@ class MacOSAXBackend:
             refs[element.id] = ref
             next_parent = element.id
 
-        children = (attributes.get("AXChildren") if attributes is not None else _attr(AS, ref, "AXChildren")) or []
+        children = _visible_rows(AS, ref) if role in _LIST_ROLES else None
+        if children is None:
+            children = (attributes.get("AXChildren") if attributes is not None else _attr(AS, ref, "AXChildren")) or []
         try:
             iterable = list(children)
         except TypeError:
@@ -295,7 +313,19 @@ class MacOSAXBackend:
         for child in iterable:
             if len(elements) >= self.max_elements:
                 break
-            self._walk(AS, child, elements, refs, visited, parent_id=next_parent, depth=depth + 1)
+            self._walk(AS, child, elements, refs, visited, parent_id=next_parent, depth=depth + 1, clip=clip)
+
+    def _request_full_tree(self, AS: Any, app_ref: Any) -> None:
+        """Ask Electron/Chromium apps to expose their full tree. They build it only for
+        assistive clients that ask, and drop it again later, so this runs per observation."""
+        if not self._full_tree_supported:
+            return
+        try:
+            error = AS.AXUIElementSetAttributeValue(app_ref, "AXManualAccessibility", True)
+        except Exception:
+            error = -1
+        if error == _AX_ATTRIBUTE_UNSUPPORTED:
+            self._full_tree_supported = False
 
     def _element_from_ref(
         self,
@@ -338,11 +368,13 @@ class MacOSAXBackend:
         if "AXShowMenu" in action_names and bounds is not None:
             capabilities.append(ActionKind.RIGHT_CLICK)
         settable = False
-        try:
-            error, settable = AS.AXUIElementIsAttributeSettable(ref, "AXValue", None)
-            settable = error == 0 and bool(settable)
-        except Exception:
-            settable = False
+        # An element without a value has no settable value; skip that round trip.
+        if raw_value is not None or not batched:
+            try:
+                error, settable = AS.AXUIElementIsAttributeSettable(ref, "AXValue", None)
+                settable = error == 0 and bool(settable)
+            except Exception:
+                settable = False
         text_editor = role in _TEXT_ROLES and _is_text_editor(AS, ref)
         if settable and text_editor:
             capabilities.append(ActionKind.TYPE_TEXT)
@@ -422,6 +454,44 @@ def _frameworks() -> tuple[Any, Any]:
             "Install the macOS extra: pip install 'arc-cua[macos]'"
         ) from exc
     return AS, AppKit
+
+
+# Lists, tables and outlines report which rows are on screen; web areas do not.
+_LIST_ROLES = {"AXTable", "AXOutline", "AXList", "AXBrowser", "AXGrid"}
+# Elements whose descendants are clipped to their bounds.
+_CLIPPING_ROLES = {"AXScrollArea", "AXWebArea"}
+_AX_ATTRIBUTE_UNSUPPORTED = -25205
+
+
+def _visible_rows(AS: Any, ref: Any) -> list[Any] | None:
+    """A list's header and on-screen rows instead of every row it holds; None if unknown.
+
+    Columns are skipped: they contain the same cells as the rows."""
+    values = copy_attributes(AS, ref, ("AXVisibleRows", "AXVisibleChildren", "AXHeader"))
+    if values is None:
+        return None
+    rows = values["AXVisibleRows"]
+    if rows is not None:
+        header = values["AXHeader"]
+        return ([header] if header is not None else []) + list(rows)
+    visible = values["AXVisibleChildren"]
+    return list(visible) if visible is not None else None
+
+
+def _overlaps(bounds: Bounds, clip: Bounds) -> bool:
+    return (
+        bounds.x < clip.x + clip.width and bounds.x + bounds.width > clip.x
+        and bounds.y < clip.y + clip.height and bounds.y + bounds.height > clip.y
+    )
+
+
+def _intersect(clip: Bounds | None, bounds: Bounds | None) -> Bounds | None:
+    if clip is None or bounds is None:
+        return clip or bounds
+    left, top = max(clip.x, bounds.x), max(clip.y, bounds.y)
+    right = min(clip.x + clip.width, bounds.x + bounds.width)
+    bottom = min(clip.y + clip.height, bounds.y + bounds.height)
+    return Bounds(left, top, max(0.0, right - left), max(0.0, bottom - top))
 
 
 _ELEMENT_ATTRIBUTES = (
