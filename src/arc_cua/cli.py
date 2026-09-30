@@ -23,6 +23,7 @@ from .errors import TargetUnavailable
 from .models import ExecutionResult, StepEvent, Subtask
 from .protocols import DecisionPolicy, DesktopBackend
 from .runtime import DesktopExecutor, RuntimeConfig
+from .safety import redact
 
 logger = logging.getLogger("arc_cua.cli")
 
@@ -59,7 +60,7 @@ class RunRequest:
 def parse_request(payload: Any) -> RunRequest:
     if not isinstance(payload, Mapping):
         raise InvalidRequest("Input must be one JSON object")
-    allowed = {"app", "subtask", "provider", "backend", "timeout_s", "min_confidence", "min_margin"}
+    allowed = {"app", "subtask", "provider", "backend", "timeout_s", "min_confidence", "min_margin", "dry_run"}
     unknown = set(payload) - allowed
     if unknown:
         raise InvalidRequest(f"Unknown fields: {sorted(map(str, unknown))}")
@@ -109,8 +110,11 @@ def parse_request(payload: Any) -> RunRequest:
         if value is not None and type(value) not in (int, float):
             raise InvalidRequest(f"{field} must be a number between 0 and 1")
         thresholds[field] = value
+    dry_run = payload.get("dry_run", False)
+    if type(dry_run) is not bool:
+        raise InvalidRequest("dry_run must be true or false")
     try:
-        config = RuntimeConfig(timeout_s=timeout_s, **thresholds)
+        config = RuntimeConfig(timeout_s=timeout_s, dry_run=dry_run, **thresholds)
     except ValueError as exc:
         raise InvalidRequest(str(exc)) from exc
 
@@ -140,27 +144,53 @@ def make_backend(app: Mapping[str, Any], kind: str) -> DesktopBackend:
     return MacOSHybridBackend(pid)
 
 
-def action_line(event: StepEvent) -> dict[str, Any]:
+def action_line(event: StepEvent, secrets: tuple[str, ...] = ()) -> dict[str, Any]:
     assert event.record is not None
     decision = event.record.decision
-    return {"type": "action", **event.record.compact(), "confidence": decision.confidence, "margin": decision.margin}
+    line = {"type": "action", **event.record.compact(), "confidence": decision.confidence, "margin": decision.margin}
+    return redact(line, secrets)
 
 
 def result_line(result: ExecutionResult) -> dict[str, Any]:
-    return {
+    return redact({
         "type": "result",
         "status": result.status.value,
         "reason": result.reason,
         "needs_input": dict(result.needs_input) if result.needs_input else None,
+        "planned_action": dict(result.planned_action) if result.planned_action else None,
         "actions_taken": result.actions_taken,
         "observations": list(result.observations),
         "application": result.final_snapshot.application,
         "window": result.final_snapshot.window,
+    }, result.subtask.secret_values)
+
+
+def decision_line(event: StepEvent, secrets: tuple[str, ...] = ()) -> dict[str, Any]:
+    """One decision for the --log file: what was chosen, how sure, and how long it took."""
+    decision = event.decision
+    raw = decision.raw or {}
+    operation = (raw.get("answers") or {}).get("operation") or {}
+    line = {
+        "step": event.step,
+        "choice": decision.kind.value if decision.kind else decision.terminal.value,
+        "target": decision.target_id,
+        "target_name": event.record.target_name if event.record else None,
+        "input_key": decision.input_key,
+        "confidence": decision.confidence,
+        "margin": decision.margin,
+        "decide_ms": decision.latency_ms,
+        "step_elapsed_ms": event.record.elapsed_ms if event.record else None,
+        "state_changed": event.record.state_changed if event.record else None,
+        "candidate_counts": raw.get("candidate_counts"),
+        "operation_probabilities": operation.get("probabilities"),
+        "outcome": event.result.status.value if event.result else None,
     }
+    return redact(line, secrets)
 
 
-def run(stdin: IO[str], stdout: IO[str]) -> int:
-    """Execute one run request. Returns the process exit code."""
+def run(stdin: IO[str], stdout: IO[str], log: IO[str] | None = None) -> int:
+    """Execute one run request. Returns the process exit code. With `log`, one JSON
+    line per decision is written there."""
 
     def emit(line: Mapping[str, Any]) -> None:
         stdout.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
@@ -187,8 +217,11 @@ def run(stdin: IO[str], stdout: IO[str]) -> int:
         logger.info("run app=%s backend=%s provider=%s", request.app, request.backend, request.provider)
         executor = DesktopExecutor(backend, policy, config=request.config)
         for event in executor.run_iter(request.subtask):
+            if log is not None:
+                log.write(json.dumps(decision_line(event, request.subtask.secret_values), default=str) + "\n")
+                log.flush()
             if event.record is not None:
-                emit(action_line(event))
+                emit(action_line(event, request.subtask.secret_values))
             if event.result is not None:
                 emit(result_line(event.result))
         return 0
@@ -196,7 +229,7 @@ def run(stdin: IO[str], stdout: IO[str]) -> int:
         return fail(str(exc), 1)
     except Exception as exc:
         logger.debug("run failed", exc_info=True)
-        return fail(f"{type(exc).__name__}: {exc}", 1)
+        return fail(redact(f"{type(exc).__name__}: {exc}", request.subtask.secret_values), 1)
     finally:
         if backend is not None and (close_backend := getattr(backend, "close", None)) is not None:
             close_backend()
@@ -220,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     run_parser.add_argument("-v", "--verbose", action="store_true", help="log debug detail to standard error")
+    run_parser.add_argument("--log", metavar="FILE", help="append one JSON line per decision to FILE")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -234,12 +268,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # Only protocol lines reach standard output; anything else printed goes to standard error.
     stdout, sys.stdout = sys.stdout, sys.stderr
+    log = open(args.log, "a", encoding="utf-8") if args.log else None
     try:
-        return run(sys.stdin, stdout)
+        return run(sys.stdin, stdout, log)
     except KeyboardInterrupt:
         return 130
     finally:
         sys.stdout = stdout
+        if log is not None:
+            log.close()
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ the answers into a Decision. A ChoiceTransport sends them to a decision model
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -26,6 +27,7 @@ from ..models import (
     TerminalKind,
     summarize_history,
 )
+from ..safety import RISKY_KINDS, SECRET_PLACEHOLDER, disallowed_risks, redact
 
 POLICY_RULES = """Execute the supplied desktop subtask using exactly one next operation.
 
@@ -153,18 +155,20 @@ class ChoicePolicy:
         history: Sequence[ActionRecord],
     ) -> Decision:
         questions, candidate_maps, meta = self._build_questions(subtask, snapshot)
+        secrets = subtask.secret_values
         state = {
             "subtask": subtask.compact(),
-            "desktop": {
+            "desktop": redact({
                 "application": snapshot.application,
                 "window": snapshot.window,
                 "context": dict(snapshot.context),
                 **_element_table(snapshot.elements),
-            },
-            "recent_actions": summarize_history(history),
+            }, secrets),
+            "recent_actions": summarize_history(history, secrets=secrets),
             "candidate_truncation": meta,
         }
 
+        counts = {name: len(question["criteria"]) for name, question in questions.items()}
         started = time.perf_counter()
         if self.screenshot_steps:
             # Every decision sees the pixels its elements were read from.
@@ -174,6 +178,7 @@ class ChoicePolicy:
             result = self.transport.ask(state, questions)
         latency_ms = round((time.perf_counter() - started) * 1000)
         answers = result.get("answers", {})
+        result = {**result, "candidate_counts": counts}
         # A decision is only as confident, and as decisive, as the weakest answer it uses.
         used: list[float] = []
         margins: list[float] = []
@@ -296,6 +301,9 @@ class ChoicePolicy:
             for kind in element.actions:
                 if kind == ActionKind.DRAG_BY:
                     continue
+                # Consequential controls are offered only when the subtask allows that risk.
+                if kind in RISKY_KINDS and disallowed_risks(element.name, subtask.allowed_risks):
+                    continue
                 if kind == ActionKind.SET_VALUE and not any(
                     _value_type_matches(element, value) for value in subtask.inputs.values()
                 ):
@@ -318,7 +326,7 @@ class ChoicePolicy:
         for kind, elements in elements_by_kind.items():
             if kind == ActionKind.SET_VALUE and not subtask.inputs:
                 continue
-            kept = elements[: self.max_candidates]
+            kept = _cap(elements, self.max_candidates, subtask)
             if len(elements) > len(kept):
                 truncation[kind.value] = len(elements) - len(kept)
             operations[kind.value] = _operation_description(kind)
@@ -380,7 +388,7 @@ class ChoicePolicy:
 
         if ActionKind.DRAG_TO.value in operations:
             destinations = [e for e in snapshot.elements if e.visible and e.enabled and e.accepts_drop]
-            destinations = destinations[: self.max_candidates]
+            destinations = _cap(destinations, self.max_candidates, subtask)
             if destinations:
                 candidate_maps["DRAG_TO_destination"] = {e.id: e.compact() for e in destinations}
                 questions["drag_to_destination"] = {
@@ -398,7 +406,7 @@ class ChoicePolicy:
                 questions.pop("drag_to_target", None)
 
         input_criteria: dict[str, Any] = {
-            key: {"key": key, "value": value}
+            key: {"key": key, "value": SECRET_PLACEHOLDER if key in subtask.secret_inputs else value}
             for key, value in list(subtask.inputs.items())[: self.max_candidates]
         }
         input_criteria[NO_INPUT] = (
@@ -548,6 +556,33 @@ def _element_table(elements: Sequence[DesktopElement]) -> dict[str, Any]:
         ),
         "elements": rows,
     }
+
+
+_WORD = re.compile(r"[^\W_]{3,}", re.UNICODE)
+
+
+def _words(text: str) -> set[str]:
+    return {word.casefold() for word in _WORD.findall(text)}
+
+
+def _cap(elements: list[DesktopElement], limit: int, subtask: Subtask) -> list[DesktopElement]:
+    """Keep at most `limit` elements: focused or selected ones, then those whose
+    label shares a word with the goal, inputs or criteria, then element order. The
+    kept elements stay in element order."""
+    if len(elements) <= limit:
+        return elements
+    task_words = _words(" ".join([
+        subtask.goal, *subtask.verification, *subtask.constraints,
+        *(str(value) for key, value in subtask.inputs.items() if key not in subtask.secret_inputs),
+    ]))
+
+    def rank(item: tuple[int, DesktopElement]) -> tuple[int, int, int]:
+        index, element = item
+        label = f"{element.name} {element.value if isinstance(element.value, str) else ''}"
+        return (0 if element.focused or element.selected else 1, -len(_words(label) & task_words), index)
+
+    chosen = sorted(enumerate(elements), key=rank)[:limit]
+    return [element for _, element in sorted(chosen, key=lambda item: item[0])]
 
 
 def _snapshot_png(snapshot: DesktopSnapshot) -> bytes:

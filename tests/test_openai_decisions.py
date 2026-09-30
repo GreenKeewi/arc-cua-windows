@@ -15,7 +15,7 @@ from arc_cua.policies._openai_decisions import OpenAIDecisionsTransport
 
 def snapshot(screenshot=None) -> DesktopSnapshot:
     return DesktopSnapshot(application="Chrome", window="Checkout", revision="1", screenshot=screenshot, elements=(
-        DesktopElement(id="w1", role="button", name="Pay", actions=(ActionKind.CLICK,)),
+        DesktopElement(id="w1", role="button", name="Review", actions=(ActionKind.CLICK,)),
         DesktopElement(id="w2", role="button", name="Cancel", actions=(ActionKind.CLICK,)),
     ))
 
@@ -58,7 +58,7 @@ def test_choice_policy_decides_through_openai_without_distributions() -> None:
 def test_distributions_are_validated_when_present() -> None:
     client = mock({"operation": "CLICK", "click_target": "w1", "click_modifier": "NONE"}, [], with_probabilities=True)
     decision = ChoicePolicy(OpenAIDecisionsTransport(api_key="test", client=client)).decide(
-        subtask=Subtask(goal="Pay", verification=("Paid",)), snapshot=snapshot(), history=(),
+        subtask=Subtask(goal="Review", verification=("Reviewed",)), snapshot=snapshot(), history=(),
     )
     assert decision.margin == 1.0
 
@@ -67,7 +67,7 @@ def test_invented_answer_is_rejected() -> None:
     client = mock({"operation": "CLICK", "click_target": "w9", "click_modifier": "NONE"}, [])
     with pytest.raises(ValueError, match="Invalid OpenAI Decisions choice response"):
         ChoicePolicy(OpenAIDecisionsTransport(api_key="test", client=client)).decide(
-            subtask=Subtask(goal="Pay", verification=("Paid",)), snapshot=snapshot(), history=(),
+            subtask=Subtask(goal="Review", verification=("Reviewed",)), snapshot=snapshot(), history=(),
         )
 
 
@@ -75,7 +75,7 @@ def test_screenshot_checks_send_the_snapshot_png() -> None:
     captured = []
     client = mock({"operation": "SUBTASK_COMPLETE", "verification_0": "SATISFIED"}, captured)
     decision = ChoicePolicy(OpenAIDecisionsTransport(api_key="test", client=client), screenshot_checks=True).decide(
-        subtask=Subtask(goal="Pay", verification=("Paid",)), snapshot=snapshot(lambda: b"png-bytes"), history=(),
+        subtask=Subtask(goal="Review", verification=("Reviewed",)), snapshot=snapshot(lambda: b"png-bytes"), history=(),
     )
     assert decision.terminal == TerminalKind.SUBTASK_COMPLETE
     image = captured[1]["input"][0]["content"][1]

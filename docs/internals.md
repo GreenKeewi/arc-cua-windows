@@ -225,6 +225,13 @@ click_modifier:
 
 One JEV request can ask for the operation and speculative operation-specific choices in parallel. Only the head corresponding to the selected operation is consumed.
 
+Each target question holds at most `max_candidates` (240) elements. When more are
+eligible, focused or selected elements are kept first, then those whose label or
+value shares a word of three or more letters with the goal, criteria, constraints
+or non-secret inputs, then element order; the kept elements are still presented in
+element order, and `state.candidate_truncation` reports how many were dropped per
+operation. Each decision's `raw["candidate_counts"]` records the options per question.
+
 These questions are provider-neutral. `ChoicePolicy` (`policies/choice.py`) builds
 them and validates the answers; a `ChoiceTransport` sends them. `TypeSafeTransport`
 (`policies/typesafe.py`) adds the model name, posts to TypeSafe, and retries rate
@@ -345,6 +352,22 @@ focused window when it is on screen, else another on-screen window, because an
 app's focused window can be on a different desktop. The settle thumbnail
 composites only the app's own windows, so the user's windows on top do not look
 like the app reacting.
+
+## Risky controls and secrets
+
+`arc_cua.safety` holds the risk vocabulary and redaction. A control's risk comes
+from whole-word matches in its label, per category (`delete`, `send`, `purchase`,
+`close`). `ChoicePolicy` leaves such controls out of the `CLICK` and `DOUBLE_CLICK`
+target choices unless `Subtask.allowed_risks` includes the category. Before
+materializing any action, the runtime checks the chosen target the same way and
+ends the run with `NEEDS_AGENT` rather than acting, so custom policies are bound by
+the same rule. Keyboard input is not gated; callers declare the shortcuts they allow.
+
+`Subtask.secret_values` are the string forms of the `secret_inputs` values.
+`Subtask.compact()` shows those inputs as `[secret]`; `ChoicePolicy` also replaces
+every occurrence of a secret value in the observed element table, window and
+context, and in `summarize_history`. `result_to_dict`, the CLI's action, result and
+error lines, and the runtime's backend-failure log apply the same replacement.
 
 ## Freshness protection
 

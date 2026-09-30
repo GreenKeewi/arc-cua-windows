@@ -212,3 +212,20 @@ def test_text_fields_are_offered_without_inputs_only_to_ask_for_text() -> None:
     questions = transport.calls[0][1]
     assert "TYPE_TEXT" in questions["operation"]["criteria"]
     assert set(questions["type_text_input"]["criteria"]) == {"NONE"}
+
+
+def test_capping_keeps_controls_related_to_the_task_in_element_order() -> None:
+    elements = tuple(
+        DesktopElement(id=f"b{i}", role="Button", name=f"Filler {i}", actions=(ActionKind.CLICK,)) for i in range(10)
+    ) + (
+        DesktopElement(id="export", role="Button", name="Export as PDF", actions=(ActionKind.CLICK,)),
+        DesktopElement(id="bold", role="Button", name="Bold", actions=(ActionKind.CLICK,), selected=True),
+    )
+    transport = FakeTransport({"operation": "NEEDS_AGENT"})
+    ChoicePolicy(transport, max_candidates=4).decide(
+        subtask=Subtask(goal="Export the document as a PDF", verification=("A PDF exists",)),
+        snapshot=DesktopSnapshot(application="Editor", window="Doc", revision="1", elements=elements), history=(),
+    )
+    state, questions = transport.calls[0]
+    assert list(questions["click_target"]["criteria"]) == ["b0", "b1", "export", "bold"]
+    assert state["candidate_truncation"] == {"CLICK": 8}

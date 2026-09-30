@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from .keyboard import parse_hotkey
+from .safety import RISK_CATEGORIES, SECRET_PLACEHOLDER, redact
 
 
 class ActionKind(StrEnum):
@@ -30,6 +31,7 @@ class TerminalKind(StrEnum):
     BLOCKED = "BLOCKED"
     NEEDS_AGENT = "NEEDS_AGENT"
     NEEDS_INPUT = "NEEDS_INPUT"
+    DRY_RUN = "DRY_RUN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +158,10 @@ class Subtask:
     max_actions: int = 30
     metadata: Mapping[str, Any] = field(default_factory=dict)
     shortcuts: Mapping[str, str] = field(default_factory=dict)
+    # Consequential-control categories the subtask may activate: delete, send, purchase, close.
+    allowed_risks: tuple[str, ...] = ()
+    # Input keys whose values the decision model never sees; arc still enters the real value.
+    secret_inputs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.goal, str) or not self.goal.strip():
@@ -191,15 +197,36 @@ class Subtask:
             if not isinstance(description, str) or not description.strip():
                 raise ValueError("Each shortcut must have a non-empty string description")
         object.__setattr__(self, "shortcuts", MappingProxyType(shortcuts))
+        for name in ("allowed_risks", "secret_inputs"):
+            values = getattr(self, name)
+            if not isinstance(values, (list, tuple)) or not all(isinstance(v, str) and v for v in values):
+                raise ValueError(f"Subtask.{name} must be an array of non-empty strings")
+            object.__setattr__(self, name, tuple(values))
+        unknown_risks = set(self.allowed_risks) - RISK_CATEGORIES
+        if unknown_risks:
+            raise ValueError(f"Unknown allowed_risks: {sorted(unknown_risks)}; use {sorted(RISK_CATEGORIES)}")
+        unknown_secrets = set(self.secret_inputs) - set(self.inputs)
+        if unknown_secrets:
+            raise ValueError(f"Subtask.secret_inputs names keys that are not inputs: {sorted(unknown_secrets)}")
+
+    @property
+    def secret_values(self) -> tuple[str, ...]:
+        """String forms of the secret input values, longest first, for redaction."""
+        values = {str(self.inputs[key]) for key in self.secret_inputs if str(self.inputs[key])}
+        return tuple(sorted(values, key=len, reverse=True))
 
     def compact(self) -> dict[str, Any]:
+        """The model-facing subtask: secret input values are replaced by a placeholder."""
         return {
             "goal": self.goal,
             "verification": list(self.verification),
-            "inputs": dict(self.inputs),
+            "inputs": {
+                key: SECRET_PLACEHOLDER if key in self.secret_inputs else value for key, value in self.inputs.items()
+            },
             "constraints": list(self.constraints),
             "metadata": dict(self.metadata),
             "shortcuts": dict(self.shortcuts),
+            "allowed_risks": list(self.allowed_risks),
         }
 
 
@@ -325,6 +352,8 @@ class ExecutionResult:
     reason: str | None = None
     # For NEEDS_INPUT: the field that needs a value none of the inputs provides.
     needs_input: Mapping[str, Any] | None = None
+    # For DRY_RUN: the validated action the run would have performed next.
+    planned_action: Mapping[str, Any] | None = None
 
     @property
     def actions_taken(self) -> int:
@@ -391,5 +420,7 @@ class StepEvent:
         return self.result is not None
 
 
-def summarize_history(history: Sequence[ActionRecord], limit: int = 8) -> list[dict[str, Any]]:
-    return [record.compact() for record in history[-limit:]]
+def summarize_history(
+    history: Sequence[ActionRecord], limit: int = 8, *, secrets: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    return [redact(record.compact(), secrets) for record in history[-limit:]]

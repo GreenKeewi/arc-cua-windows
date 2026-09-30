@@ -477,3 +477,13 @@ def test_needs_input_reports_the_field_without_acting() -> None:
     assert result.status == TerminalKind.NEEDS_INPUT
     assert result.actions_taken == 0
     assert result.needs_input == {"element_id": "search", "role": "text_field", "name": "Search", "value": ""}
+
+
+def test_dry_run_reports_the_next_action_without_acting() -> None:
+    backend = StateMachineBackend({"value": ""}, snapshot, transition)
+    policy = ScriptedPolicy([Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="query")])
+    task = Subtask(goal="Search", verification=("Searched",), inputs={"query": "x"})
+    result = DesktopExecutor(backend, policy, config=RuntimeConfig(dry_run=True)).run(task)
+    assert result.status == TerminalKind.DRY_RUN
+    assert result.actions_taken == 0 and backend.state["value"] == ""
+    assert result.planned_action == {"action": "TYPE_TEXT", "target": "search", "target_name": "Search", "value": "x"}

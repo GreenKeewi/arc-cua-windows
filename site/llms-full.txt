@@ -142,6 +142,8 @@ The upstream agent creates a Subtask that defines:
 | max_actions | int | Action budget (default 30) |
 | metadata | Mapping[str, Any] | Opaque pass-through for the caller |
 | shortcuts | Mapping[str, str] | Extra keyboard chords and descriptions for this subtask (default empty) |
+| allowed_risks | tuple[str, ...] | Consequential-control categories allowed: delete, send, purchase, close (default none) |
+| secret_inputs | tuple[str, ...] | Input keys whose values the decision model never sees (default none) |
 
 Validation:
 - goal must be a non-empty string
@@ -151,6 +153,15 @@ Validation:
 - max_actions must be an integer >= 1, not a numeric string or boolean
 - metadata must be an object
 - shortcuts must map valid uppercase chords to non-empty descriptions
+- allowed_risks entries must be delete, send, purchase or close; secret_inputs entries must be keys of inputs
+
+Controls labelled like a consequential action (whole words such as delete, remove,
+send, post, share, buy, pay, checkout, close, quit, sign out) are not offered for
+CLICK or DOUBLE_CLICK unless their category is in allowed_risks, and the runtime
+refuses such clicks from any policy with NEEDS_AGENT. Secret input values appear as
+"[secret]" in the subtask, input choices, observed text and history sent to the
+model, and in result_to_dict, arc-cua run output and runtime error logs; the real
+value is still entered. Screenshots are not redacted.
 
 Example: `shortcuts={"MOD+S": "Save the current document"}`. These are added to the existing HOTKEY choices for this subtask only. Matching defaults can be given a contextual description. JEV receives chord IDs and descriptions and chooses one offered chord. Runtime validation rejects undeclared non-default hotkeys, including those emitted by custom policies.
 
@@ -209,6 +220,7 @@ UI operations the executor can perform:
 | BLOCKED | Cannot make progress with available operations |
 | NEEDS_AGENT | Higher-level reasoning required or action budget reached |
 | NEEDS_INPUT | A field needs a value none of the inputs provides; ExecutionResult.needs_input names it |
+| DRY_RUN | RuntimeConfig.dry_run: next action chosen and validated, not performed; ExecutionResult.planned_action |
 
 TypeSafeJevPolicy asks a separate choice head for each verification criterion.
 A proposed SUBTASK_COMPLETE becomes NEEDS_AGENT, with an explanatory reason, if
@@ -365,6 +377,7 @@ class ExecutionResult:
     observations: tuple[str, ...] = ()
     reason: str | None = None
     needs_input: Mapping[str, Any] | None = None  # NEEDS_INPUT: element_id, role, name, value, options
+    planned_action: Mapping[str, Any] | None = None  # DRY_RUN: action, target, target_name, value, key...
 
     @property
     def actions_taken(self) -> int: ...
@@ -430,6 +443,7 @@ class RuntimeConfig:
     verify: VerifyFn | None = None   # Verification callback for SUBTASK_COMPLETE
     min_confidence: float | None = None  # Below this: NEEDS_AGENT instead of acting/completing
     min_margin: float | None = None      # Lead over runner-up below this (near-tie): NEEDS_AGENT
+    dry_run: bool = False                # Decide and validate one action, then DRY_RUN without acting
 ```
 
 min_confidence and min_margin gate action decisions and SUBTASK_COMPLETE.
@@ -511,14 +525,16 @@ app and exits. Standard input: one JSON object.
 | provider | {"name": "jev", "api_key": str, "model": str (optional)} (required); api_key falls back to TYPESAFE_API_KEY |
 | backend | "hybrid" (default) or "ax" |
 | timeout_s, min_confidence, min_margin | RuntimeConfig fields |
+| dry_run | true: stop with DRY_RUN and planned_action instead of acting |
 
 Standard output: one JSON line per executed action,
 `{"type": "action", ...ActionRecord.compact(), "confidence", "margin"}`, then
-`{"type": "result", "status", "reason", "needs_input", "actions_taken", "observations", "application", "window"}`,
+`{"type": "result", "status", "reason", "needs_input", "planned_action", "actions_taken", "observations", "application", "window"}`,
 exit code 0. If no result can be produced, the last line is
 `{"type": "error", "error": str}`: exit code 2 for invalid input, 1 otherwise (app
 quit or has no usable window, missing permission, provider failure). Logs go to
-standard error only; `-v` adds debug detail. To stop a run, terminate the process;
+standard error only; `-v` adds debug detail. `--log FILE` appends one JSON line per
+decision: step, choice, target, target_name, input_key, confidence, margin, decide_ms, step_elapsed_ms, state_changed, candidate_counts (options per question), operation_probabilities and outcome. To stop a run, terminate the process;
 on SIGTERM/SIGINT it puts parked windows back and returns key focus before exiting.
 
 ---
@@ -676,7 +692,7 @@ from arc_cua.policies import ChoicePolicy, TypeSafeTransport
 
 policy = ChoicePolicy(
     TypeSafeTransport(),
-    max_candidates=240,
+    max_candidates=240,       # per question; over it, focused/selected and goal-related controls are kept first
     screenshot_checks=False,  # needs transport.supports_images and snapshot.screenshot
     screenshot_steps=False,   # attach snapshot.screenshot() to every decision
 )

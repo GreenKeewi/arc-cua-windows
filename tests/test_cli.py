@@ -124,3 +124,41 @@ def test_needs_input_is_a_result_naming_the_field(monkeypatch):
     assert code == 0
     assert lines[-1]["status"] == "NEEDS_INPUT"
     assert lines[-1]["needs_input"] == {"element_id": "search", "role": "TextField", "name": "Search", "value": ""}
+
+
+def test_secret_inputs_are_redacted_in_every_line(monkeypatch):
+    request = {**REQUEST, "subtask": {**REQUEST["subtask"], "secret_inputs": ["city"]}}
+    code, lines, _ = run(monkeypatch, request, decisions=[
+        Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="city"),
+        Decision(terminal=TerminalKind.SUBTASK_COMPLETE),
+    ])
+    assert code == 0
+    assert "Zurich" not in json.dumps(lines)
+    assert lines[0]["value"] == "[secret]"
+
+
+def test_log_file_records_each_decision(monkeypatch):
+    log = io.StringIO()
+    policy = ScriptedPolicy([
+        Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="city", confidence=0.8, latency_ms=12),
+        Decision(terminal=TerminalKind.SUBTASK_COMPLETE, confidence=0.9),
+    ])
+    backend = StateMachineBackend({"value": ""}, snapshot, transition)
+    monkeypatch.setitem(cli.PROVIDERS, "jev", lambda api_key, model: policy)
+    monkeypatch.setattr(cli, "make_backend", lambda app, kind: backend)
+    code = cli.run(io.StringIO(json.dumps(REQUEST)), io.StringIO(), log)
+    entries = [json.loads(line) for line in log.getvalue().splitlines()]
+    assert code == 0
+    assert [(e["step"], e["choice"], e["outcome"]) for e in entries] == [
+        (1, "TYPE_TEXT", None), (2, "SUBTASK_COMPLETE", "SUBTASK_COMPLETE"),
+    ]
+    assert entries[0]["decide_ms"] == 12 and entries[0]["state_changed"] is True
+
+
+def test_dry_run_request_plans_without_acting(monkeypatch):
+    code, lines, _ = run(monkeypatch, {**REQUEST, "dry_run": True}, decisions=[
+        Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="city"),
+    ])
+    assert code == 0
+    assert lines[-1]["status"] == "DRY_RUN"
+    assert lines[-1]["planned_action"]["action"] == "TYPE_TEXT"

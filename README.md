@@ -157,6 +157,8 @@ The JSON API validates the same contract as `Subtask` before calling the policy:
 | `max_actions` | Integer at least 1; defaults to 30 |
 | `shortcuts` | Object mapping uppercase chords to non-empty descriptions |
 | `metadata` | Object; defaults to `{}` |
+| `allowed_risks` | Array of `"delete"`, `"send"`, `"purchase"`, `"close"`; defaults to `[]` |
+| `secret_inputs` | Array of `inputs` keys whose values the model never sees; defaults to `[]` |
 
 For example, use `"verification": ["The folder exists"]`, even for one criterion.
 A bare string is rejected rather than split into characters. The Python API accepts
@@ -168,6 +170,36 @@ Supply each folder name, filename, or path to be typed as a literal in `inputs`.
 Text mentioned only in `goal` cannot be invented as an input by JEV.
 Use `MOD+SHIFT+N`, not `Command+Shift+N`; an unmodified Return is the built-in
 `PRESS_KEY` value `ENTER`, not an extra hotkey.
+
+### Risky controls and secrets
+
+Controls whose label reads like a consequential action are not offered to the
+decision model unless the subtask allows that category in `allowed_risks`:
+
+| Category | Label words (whole words, any case) |
+|---|---|
+| `delete` | delete, remove, erase, trash, discard, clear all, empty trash, permanently |
+| `send` | send, post, publish, share, reply all, forward, tweet |
+| `purchase` | buy, purchase, pay, checkout, check out, place order, order now, subscribe, donate, confirm payment |
+| `close` | close, quit, exit, sign out, log out, logout, shut down, restart, uninstall |
+
+This applies to `CLICK` and `DOUBLE_CLICK`. The runtime also refuses such a click
+from any policy and returns `NEEDS_AGENT` with the reason, without acting.
+
+Values named in `secret_inputs` are replaced by `[secret]` everywhere the decision
+model reads them: the subtask, the input choices, observed element text, and the
+action history. The runtime still enters the real value. `result_to_dict`, the
+`arc-cua run` output and the runtime's error log are redacted the same way.
+Screenshots sent with `screenshot_checks` or `screenshot_steps` are not redacted.
+
+```python
+Subtask(
+    goal="Sign in to the account",
+    inputs={"email": "sam@example.com", "password": "..."},
+    secret_inputs=("password",),
+    verification=("The account page is shown",),
+)
+```
 
 ### Hybrid macOS perception
 
@@ -255,6 +287,7 @@ JSON object from standard input:
 | `provider` | `name` (`"jev"`), `api_key`, and optionally `model` (required) |
 | `backend` | `"hybrid"` (AX + OCR, the default) or `"ax"` |
 | `timeout_s`, `min_confidence`, `min_margin` | As in `RuntimeConfig` |
+| `dry_run` | `true` to decide and validate the next action, then stop with `DRY_RUN` without acting |
 
 It prints one JSON line to standard output after every action, then a final line,
 and exits:
@@ -270,6 +303,9 @@ produce a result, the last line is `{"type": "error", "error": "..."}` instead:
 exit code 2 for invalid input, 1 when the app quit or has no usable window, a
 permission is missing, or the provider failed. Logs go to standard error, never
 standard output (`-v` for debug detail).
+
+`--log FILE` appends one JSON line per decision to `FILE`, including the final
+one: `step`, `choice`, `target`, `target_name`, `input_key`, `confidence`, `margin`, `decide_ms`, `step_elapsed_ms`, `state_changed`, `candidate_counts` (options per question), `operation_probabilities` and `outcome`. Secret inputs are redacted there too.
 
 Runs are stateless: each process runs one subtask. To stop a run, terminate the
 process (`SIGTERM` or `SIGINT`); it exits after putting back any windows it moved
@@ -335,6 +371,7 @@ The hybrid macOS backend settles on a cheap visual probe: the target app's front
 | `BLOCKED` | Cannot make progress with available operations |
 | `NEEDS_AGENT` | Higher-level reasoning required or action budget reached |
 | `NEEDS_INPUT` | A field needs a value none of the `inputs` provides; `needs_input` names the field |
+| `DRY_RUN` | Dry run: the next action was chosen and validated but not performed; `planned_action` describes it |
 
 The caller owns overall task completion.
 

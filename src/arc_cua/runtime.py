@@ -20,6 +20,7 @@ from .models import (
     TerminalKind,
 )
 from .protocols import DecisionPolicy, DesktopBackend
+from .safety import RISKY_KINDS, disallowed_risks, redact
 from .validation import materialize_action
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,8 @@ class RuntimeConfig:
     # Same, when the chosen option's probability leads the runner-up's by less
     # than this (a near-tie). Decisions that report no margin are not gated.
     min_margin: float | None = None
+    # Decide and validate the next action, then stop with DRY_RUN instead of acting.
+    dry_run: bool = False
 
     def __post_init__(self) -> None:
         for name in ("min_confidence", "min_margin"):
@@ -328,8 +331,35 @@ class DesktopExecutor:
                 yield StepEvent(step=step, snapshot=snapshot, decision=decision, result=result)
                 return result
 
+            refusal = _risk_refusal(decision, snapshot, subtask)
+            if refusal is not None:
+                result = ExecutionResult(
+                    status=TerminalKind.NEEDS_AGENT,
+                    subtask=subtask,
+                    final_snapshot=snapshot,
+                    history=tuple(history),
+                    reason=refusal,
+                )
+                logger.debug("refused step=%d: %s", step, refusal)
+                yield StepEvent(step=step, snapshot=snapshot, decision=decision, result=result)
+                return result
+
             action = materialize_action(decision, snapshot, subtask)
             logger.debug("step=%d action=%s target=%s", step, action.kind.value, action.target_id)
+
+            if self.config.dry_run:
+                planned = _planned_action(action, snapshot)
+                result = ExecutionResult(
+                    status=TerminalKind.DRY_RUN,
+                    subtask=subtask,
+                    final_snapshot=snapshot,
+                    history=tuple(history),
+                    reason=f"Dry run: the next action would be {action.kind.value}"
+                    + (f" on {planned['target_name']!r}." if planned.get("target_name") else "."),
+                    planned_action=planned,
+                )
+                yield StepEvent(step=step, snapshot=snapshot, decision=decision, action=action, result=result)
+                return result
 
             if not self.backend.is_fresh(snapshot, action):
                 stale_retries += 1
@@ -364,7 +394,7 @@ class DesktopExecutor:
             except (InvalidDecision, TargetUnavailable):
                 raise
             except Exception as exc:
-                logger.warning("backend execute failed step=%d: %s", step, exc)
+                logger.warning("backend execute failed step=%d: %s", step, redact(str(exc), subtask.secret_values))
                 result = ExecutionResult(
                     status=TerminalKind.NEEDS_AGENT,
                     subtask=subtask,
@@ -470,6 +500,41 @@ def _structural_signature(
             )
 
     return tuple(sorted(rows))
+
+
+def _planned_action(action: ExecutableAction, snapshot: DesktopSnapshot) -> dict[str, Any]:
+    try:
+        target = snapshot.element(action.target_id) if action.target_id else None
+    except KeyError:
+        target = None
+    planned = {
+        "action": action.kind.value,
+        "target": action.target_id,
+        "target_name": target.name if target else None,
+        "value": action.value,
+        "key": action.key,
+        "hotkey": action.hotkey,
+        "scroll_direction": action.scroll_direction,
+        "click_modifier": action.click_modifier,
+    }
+    return {key: value for key, value in planned.items() if value is not None}
+
+
+def _risk_refusal(decision: Decision, snapshot: DesktopSnapshot, subtask: Subtask) -> str | None:
+    """Refuse activating a consequential control the subtask did not allow."""
+    if decision.kind not in RISKY_KINDS or not decision.target_id:
+        return None
+    try:
+        target = snapshot.element(decision.target_id)
+    except KeyError:
+        return None
+    risks = disallowed_risks(target.name, subtask.allowed_risks)
+    if not risks:
+        return None
+    return (
+        f"Refused {decision.kind.value} on {target.name!r}: a {'/'.join(sorted(risks))} action, "
+        "which the subtask does not allow (allowed_risks)."
+    )
 
 
 def _requested_field(decision: Decision, snapshot: DesktopSnapshot) -> dict[str, Any] | None:
