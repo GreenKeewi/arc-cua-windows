@@ -20,7 +20,7 @@ from ..models import (
     DesktopSnapshot,
     ExecutableAction,
 )
-from .macos_ax import MacOSAXBackend, copy_attributes, modifier_flags
+from .macos_ax import _KEYCODES, MacOSAXBackend, copy_attributes, modifier_flags
 from .macos_events import AXEventMonitor
 from .macos_ocr import MacOSOCRProvider, _normalize_ocr_text, png_image, window_thumbnail
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True, eq=False)
 class VisualProbe:
-    """Cheap settle probe: frontmost window, a small thumbnail, and an AX event count.
+    """Cheap settle probe: the app's front window, a small thumbnail, and an AX event count.
 
     Two probes are equal when the window is the same, no accessibility
     notification arrived in between, and almost no thumbnail pixels changed
@@ -81,10 +81,15 @@ class MacOSHybridBackend:
       - screen coordinates
 
     Both become DesktopElement objects.
+
+    Observes and controls one app, given by process ID, in the background; see
+    MacOSAXBackend. Use it as a context manager to also reach a minimized window
+    or a hidden app's windows, out of sight.
     """
 
     def __init__(
         self,
+        pid: int,
         *,
         max_ax_elements: int = 1200,
         max_ax_depth: int = 18,
@@ -94,6 +99,7 @@ class MacOSHybridBackend:
     ) -> None:
 
         self.ax = MacOSAXBackend(
+            pid,
             max_elements=max_ax_elements,
             max_depth=max_ax_depth,
         )
@@ -113,6 +119,26 @@ class MacOSHybridBackend:
         ] = {}
 
         self._ax_events = AXEventMonitor()
+
+        self.app = self.ax.app
+
+    @property
+    def pid(self) -> int:
+        return self.app.pid
+
+    def open(self) -> None:
+        """Make sure the app has a window to work in; see ``MacOSApp.open``."""
+        self.app.open()
+
+    def close(self) -> None:
+        self.app.close()
+
+    def __enter__(self) -> MacOSHybridBackend:
+        self.open()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
 
     def observe(
         self,
@@ -144,7 +170,7 @@ class MacOSHybridBackend:
             )
 
         # While a modal is active, don't force OCR to the old AX window title.
-        # Let Quartz choose the frontmost app surface.
+        # Let Quartz choose the app's front surface.
         preferred_title = (
             None
             if modal_active
@@ -250,6 +276,8 @@ class MacOSHybridBackend:
             }
         )
 
+        self.app.keep_behind()
+
         logger.debug(
             "hybrid observe ax=%d ocr=%d modal=%s",
             len(ax_elements), len(ocr_elements), modal_active,
@@ -278,25 +306,24 @@ class MacOSHybridBackend:
     def settle_probe(self) -> VisualProbe:
         """Lightweight signal for post-action settling (no AX walk, no OCR)."""
 
-        pid = self.ocr.frontmost_pid()
+        pid = self.app.pid
+        self.app.keep_behind()
         events = (
             self._ax_events.count
-            if pid is not None and self._ax_events.watch(pid)
+            if self._ax_events.watch(pid)
             else 0
         )
-        window = (
-            self.ocr.front_window(pid)
-            if pid is not None
-            else None
-        )
-        if window is None:
+        windows = self.app.windows()
+        if not windows:
             return VisualProbe(pid, None, None, b"", events)
+        window = windows[0]
         bounds = window.bounds
+        # Only this app's windows: the user's windows covering it are not its reaction.
         return VisualProbe(
             pid,
             window.window_id,
             (bounds.x, bounds.y, bounds.width, bounds.height),
-            window_thumbnail(bounds),
+            window_thumbnail(bounds, window_ids=[w.window_id for w in windows]),
             events,
         )
 
@@ -334,10 +361,12 @@ class MacOSHybridBackend:
             )
 
         # OCR target: make sure the app is
-        # still frontmost.
+        # still running.
+
+        self.app.check_running()
 
         if (
-            self.ocr.frontmost_pid()
+            self.app.pid
             != snapshot.context.get("pid")
         ):
             return False
@@ -425,24 +454,18 @@ class MacOSHybridBackend:
 
             # OCR gives us a visual focus target. action.value has already been
             # validated/resolved from Subtask.inputs by arc_cua.
-            _click(
-                target.bounds,
-                count=1,
-                button="left",
-            )
+            self.app.click(target.bounds)
 
             time.sleep(0.08)
-            _select_all()
+            self.app.shortcut(("MOD",), "A", _KEYCODES["A"], modifier_flags(("MOD",)))
             time.sleep(0.08)
-            _type_text(str(action.value))
+            self.app.type_text(str(action.value))
             return
 
         if action.kind == ActionKind.CLICK:
 
-            _click(
+            self.app.click(
                 target.bounds,
-                count=1,
-                button="left",
                 flags=(
                     modifier_flags((action.click_modifier,))
                     if action.click_modifier
@@ -457,10 +480,9 @@ class MacOSHybridBackend:
             == ActionKind.DOUBLE_CLICK
         ):
 
-            _click(
+            self.app.click(
                 target.bounds,
                 count=2,
-                button="left",
             )
 
             return
@@ -470,10 +492,9 @@ class MacOSHybridBackend:
             == ActionKind.RIGHT_CLICK
         ):
 
-            _click(
+            self.app.click(
                 target.bounds,
-                count=1,
-                button="right",
+                right=True,
             )
 
             return
@@ -501,7 +522,7 @@ class MacOSHybridBackend:
                     "no screen bounds"
                 )
 
-            _drag(
+            self.app.drag(
                 target.bounds,
                 destination.bounds,
             )
@@ -514,96 +535,6 @@ class MacOSHybridBackend:
             f"and DRAG_TO; got "
             f"{action.kind.value}"
         )
-
-
-def _select_all() -> None:
-    Q = _quartz()
-
-    # macOS Cmd+A. Virtual keycode 0 is the A key.
-    keycode_a = 0
-
-    for down in (True, False):
-        event = Q.CGEventCreateKeyboardEvent(
-            None,
-            keycode_a,
-            down,
-        )
-        Q.CGEventSetFlags(
-            event,
-            Q.kCGEventFlagMaskCommand,
-        )
-        Q.CGEventPost(
-            Q.kCGHIDEventTap,
-            event,
-        )
-
-
-def _type_text(
-    text: str,
-    *,
-    check=None,
-) -> None:
-    """
-    Type an agent-supplied literal one Character at a time.
-
-    This mirrors Third Hand's macOS implementation:
-    - one Unicode key-down/key-up pair per character
-    - modifier flags explicitly cleared on every event
-    - optional focus check before each character
-
-    This function never generates or chooses text.
-    """
-    if not text:
-        return
-
-    Q = _quartz()
-
-    for index, character in enumerate(text):
-        if check is not None:
-            check()
-
-        down = Q.CGEventCreateKeyboardEvent(
-            None,
-            0,
-            True,
-        )
-        up = Q.CGEventCreateKeyboardEvent(
-            None,
-            0,
-            False,
-        )
-
-        if down is None or up is None:
-            raise RuntimeError(
-                "Could not create macOS Unicode keyboard events"
-            )
-
-        # A preceding Cmd+A must not turn Unicode input into shortcuts.
-        Q.CGEventSetFlags(down, 0)
-        Q.CGEventSetFlags(up, 0)
-
-        # CGEventKeyboardSetUnicodeString uses UTF-16 code units.
-        unit_count = len(character.encode("utf-16-le")) // 2
-
-        Q.CGEventKeyboardSetUnicodeString(
-            down,
-            unit_count,
-            character,
-        )
-        Q.CGEventKeyboardSetUnicodeString(
-            up,
-            unit_count,
-            character,
-        )
-
-        Q.CGEventPost(Q.kCGHIDEventTap, down)
-        Q.CGEventPost(Q.kCGHIDEventTap, up)
-
-        # Third Hand periodically yields. This tiny pause gives Electron/custom
-        # controls a chance to process the event queue without slowing typing.
-        if index % 16 == 15:
-            time.sleep(0.001)
-
 
 
 def _dedupe_ocr(
@@ -1184,200 +1115,6 @@ def _bounds_contains_point(
         and bounds.y <= y <= (
             bounds.y + bounds.height
         )
-    )
-
-
-def _quartz() -> Any:
-
-    try:
-        import Quartz  # type: ignore
-
-    except ImportError as exc:
-
-        raise RuntimeError(
-            "Install the macOS extra: "
-            "pip install 'arc-cua[macos]'"
-        ) from exc
-
-    return Quartz
-
-
-def _click(
-    bounds: Bounds,
-    *,
-    count: int,
-    button: str,
-    flags: int = 0,
-) -> None:
-
-    Q = _quartz()
-
-    point = bounds.center
-
-    if button == "right":
-
-        mouse_button = (
-            Q.kCGMouseButtonRight
-        )
-
-        down_type = (
-            Q.kCGEventRightMouseDown
-        )
-
-        up_type = (
-            Q.kCGEventRightMouseUp
-        )
-
-    else:
-
-        mouse_button = (
-            Q.kCGMouseButtonLeft
-        )
-
-        down_type = (
-            Q.kCGEventLeftMouseDown
-        )
-
-        up_type = (
-            Q.kCGEventLeftMouseUp
-        )
-
-    move = Q.CGEventCreateMouseEvent(
-        None,
-        Q.kCGEventMouseMoved,
-        point,
-        mouse_button,
-    )
-
-    Q.CGEventPost(
-        Q.kCGHIDEventTap,
-        move,
-    )
-
-    for index in range(count):
-
-        click_state = (
-            index + 1
-            if count > 1
-            else 1
-        )
-
-        down = (
-            Q.CGEventCreateMouseEvent(
-                None,
-                down_type,
-                point,
-                mouse_button,
-            )
-        )
-
-        up = (
-            Q.CGEventCreateMouseEvent(
-                None,
-                up_type,
-                point,
-                mouse_button,
-            )
-        )
-
-        Q.CGEventSetFlags(down, flags)
-        Q.CGEventSetFlags(up, flags)
-
-        Q.CGEventSetIntegerValueField(
-            down,
-            Q.kCGMouseEventClickState,
-            click_state,
-        )
-
-        Q.CGEventSetIntegerValueField(
-            up,
-            Q.kCGMouseEventClickState,
-            click_state,
-        )
-
-        Q.CGEventPost(
-            Q.kCGHIDEventTap,
-            down,
-        )
-
-        Q.CGEventPost(
-            Q.kCGHIDEventTap,
-            up,
-        )
-
-        if index + 1 < count:
-            time.sleep(0.06)
-
-
-def _drag(
-    source: Bounds,
-    destination: Bounds,
-) -> None:
-
-    Q = _quartz()
-
-    start = source.center
-    end = destination.center
-
-    button = Q.kCGMouseButtonLeft
-
-    Q.CGEventPost(
-        Q.kCGHIDEventTap,
-        Q.CGEventCreateMouseEvent(
-            None,
-            Q.kCGEventMouseMoved,
-            start,
-            button,
-        ),
-    )
-
-    Q.CGEventPost(
-        Q.kCGHIDEventTap,
-        Q.CGEventCreateMouseEvent(
-            None,
-            Q.kCGEventLeftMouseDown,
-            start,
-            button,
-        ),
-    )
-
-    # Use intermediate drag points rather
-    # than teleporting the cursor.
-
-    for step in range(1, 6):
-
-        t = step / 5
-
-        point = (
-            start[0]
-            + (end[0] - start[0]) * t,
-
-            start[1]
-            + (end[1] - start[1]) * t,
-        )
-
-        Q.CGEventPost(
-            Q.kCGHIDEventTap,
-
-            Q.CGEventCreateMouseEvent(
-                None,
-                Q.kCGEventLeftMouseDragged,
-                point,
-                button,
-            ),
-        )
-
-        time.sleep(0.015)
-
-    Q.CGEventPost(
-        Q.kCGHIDEventTap,
-
-        Q.CGEventCreateMouseEvent(
-            None,
-            Q.kCGEventLeftMouseUp,
-            end,
-            button,
-        ),
     )
 
 

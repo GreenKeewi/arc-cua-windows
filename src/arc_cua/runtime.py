@@ -7,7 +7,7 @@ from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import Any
 
-from .errors import InvalidDecision, StaleDesktopState
+from .errors import InvalidDecision, StaleDesktopState, TargetUnavailable
 from .models import (
     ActionKind,
     ActionRecord,
@@ -360,7 +360,7 @@ class DesktopExecutor:
                 stale_retries += 1
                 snapshot = self.backend.observe()
                 continue
-            except InvalidDecision:
+            except (InvalidDecision, TargetUnavailable):
                 raise
             except Exception as exc:
                 logger.warning("backend execute failed step=%d: %s", step, exc)

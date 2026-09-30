@@ -28,11 +28,12 @@ macOS permissions required:
 
 ```python
 from arc_cua import execute_payload, DesktopExecutor, RuntimeConfig
-from arc_cua.backends import MacOSHybridBackend
+from arc_cua.backends import MacOSApp, MacOSHybridBackend
 from arc_cua.policies import TypeSafeJevPolicy
 
+pid = MacOSApp.from_bundle_id("com.spotify.client").pid
 executor = DesktopExecutor(
-    MacOSHybridBackend(),
+    MacOSHybridBackend(pid),
     TypeSafeJevPolicy(),
 )
 
@@ -496,6 +497,30 @@ Convenience: `result_to_dict(executor.run(subtask_from_dict(payload)))`.
 
 ---
 
+## Command line
+
+`arc-cua run` (also `python -m arc_cua run`) executes one subtask against one macOS
+app and exits. Standard input: one JSON object.
+
+| Field | Meaning |
+|---|---|
+| app | {"pid": int} or {"bundle_id": str} (required) |
+| subtask | Subtask JSON as for subtask_from_dict (required) |
+| provider | {"name": "jev", "api_key": str, "model": str (optional)} (required); api_key falls back to TYPESAFE_API_KEY |
+| backend | "hybrid" (default) or "ax" |
+| timeout_s, min_confidence, min_margin | RuntimeConfig fields |
+
+Standard output: one JSON line per executed action,
+`{"type": "action", ...ActionRecord.compact(), "confidence", "margin"}`, then
+`{"type": "result", "status", "reason", "actions_taken", "observations", "application", "window"}`,
+exit code 0. If no result can be produced, the last line is
+`{"type": "error", "error": str}`: exit code 2 for invalid input, 1 otherwise (app
+quit or has no usable window, missing permission, provider failure). Logs go to
+standard error only; `-v` adds debug detail. To stop a run, terminate the process;
+on SIGTERM/SIGINT it puts parked windows back and returns key focus before exiting.
+
+---
+
 ## Protocols
 
 ### DesktopBackend
@@ -531,11 +556,25 @@ class DecisionPolicy(Protocol):
 ### MacOSHybridBackend
 
 ```python
-from arc_cua.backends import MacOSHybridBackend
-backend = MacOSHybridBackend()
+from arc_cua.backends import MacOSApp, MacOSHybridBackend
+backend = MacOSHybridBackend(pid)   # pid of the app to control
+with MacOSHybridBackend(MacOSApp.from_bundle_id("com.apple.TextEdit").pid) as backend:
+    ...                             # also reaches minimized/hidden windows, out of sight
 ```
 
 Combines MacOSAXBackend (semantic controls) and MacOSOCRProvider (Apple Vision OCR). Handles modal detection, OCR deduplication, and coordinate-based execution for OCR targets.
+
+Both macOS backends act on one app, given by process ID, whether or not it is
+frontmost. Input is delivered in the background: events are addressed to the app's
+window, so the user's pointer does not move, the window is not raised and the front
+app does not change. Command chords run through the app's menu when an enabled
+item has them. As a context manager (or `open()`/`close()`), the backend moves a
+minimized window or a hidden app's windows onto an invisible display for the run,
+then puts them back. When the app quits or has no usable window (closed, or on
+another desktop), observe/is_fresh/execute raise TargetUnavailable.
+
+`MacOSApp(pid)` / `MacOSApp.from_bundle_id(bundle_id)` resolve the target app;
+`backend.app` is the backend's MacOSApp and `backend.pid` its process ID.
 
 OCR text that an actionable AX element already represents (same text, centered
 inside it) is dropped, so one control has one id. Each snapshot's `screenshot()`
@@ -574,10 +613,10 @@ drop, browser UI.
 
 ```python
 from arc_cua.backends import MacOSAXBackend
-backend = MacOSAXBackend(max_elements=1200, max_depth=18)
+backend = MacOSAXBackend(pid, max_elements=1200, max_depth=18)
 ```
 
-Pure Accessibility backend. Traverses the AX tree of the frontmost application. Supports CLICK, DOUBLE_CLICK, RIGHT_CLICK, TYPE_TEXT, SET_VALUE, PRESS_KEY, HOTKEY, SCROLL.
+Pure Accessibility backend. Traverses the AX tree of the app with that process ID, from its window on the current desktop. Background input as for MacOSHybridBackend. Supports CLICK, DOUBLE_CLICK, RIGHT_CLICK, TYPE_TEXT, SET_VALUE, PRESS_KEY, HOTKEY, SCROLL.
 
 AX element IDs use Core Foundation equality and hashing, with collision handling,
 across normal and modal traversals. The observer uses the main window as a fallback
@@ -682,8 +721,9 @@ All inherit from `JevDesktopError(RuntimeError)`:
 | StaleDesktopState | Target changed between observation and execution |
 | InvalidDecision | Policy returned an illegal action for the current snapshot |
 | UnsupportedDesktopAction | Backend does not support the requested action kind |
+| TargetUnavailable | The target app quit, or has no window that can be observed and controlled |
 
-StaleDesktopState is caught by the runtime and triggers re-observation. InvalidDecision propagates to the caller. Other backend exceptions are caught and return NEEDS_AGENT.
+StaleDesktopState is caught by the runtime and triggers re-observation. InvalidDecision and TargetUnavailable propagate to the caller. Other backend exceptions are caught and return NEEDS_AGENT.
 
 ---
 

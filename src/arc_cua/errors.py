@@ -12,3 +12,7 @@ class InvalidDecision(JevDesktopError):
 
 class UnsupportedDesktopAction(JevDesktopError):
     pass
+
+
+class TargetUnavailable(JevDesktopError):
+    """The target app quit, or has no window that can be observed and controlled."""

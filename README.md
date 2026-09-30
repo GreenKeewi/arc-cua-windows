@@ -182,6 +182,85 @@ repeated request data without discarding element facts or changing the offered c
 Provider token-limit failures include `max_tokens_exceeded` in the returned error;
 no UI action is executed for a failed decision request.
 
+### Background control on macOS
+
+`MacOSHybridBackend` and `MacOSAXBackend` act on one app, given by its process ID,
+whether or not it is frontmost. Input reaches that app in the background: clicks,
+keys, text and scrolling are addressed to its window, so the user's pointer does not
+move, the window is not raised and the front app does not change. The user can keep
+working while a subtask runs.
+
+```python
+from arc_cua import DesktopExecutor
+from arc_cua.backends import MacOSApp, MacOSHybridBackend
+from arc_cua.policies import TypeSafeJevPolicy
+
+pid = MacOSApp.from_bundle_id("com.apple.TextEdit").pid
+with MacOSHybridBackend(pid) as backend:
+    result = DesktopExecutor(backend, TypeSafeJevPolicy()).run(subtask)
+```
+
+- **Accessibility first.** `AXPress` and `AXValue` need no events at all. Other
+  input is posted to the app's process, with key focus lent to its window for the
+  few milliseconds an event batch takes and then handed back to the user's window.
+- **Command shortcuts** go through the app's menu when an enabled menu item has
+  them, since menu key equivalents only reach the front app. `MOD+A` in a text
+  field selects its text through accessibility.
+- **Hidden and minimized windows.** Used as a context manager (or with `open()` and
+  `close()`), the backend moves a minimized window, or a hidden app's windows, onto
+  an invisible display where the app still renders them and takes input. On exit
+  they are minimized or hidden again and moved back.
+- **If the app activates itself** after an input, which some controls do, the
+  user's app is brought back to the front.
+- **Clear failures.** Once the app quits, or has no usable window (closed, or on
+  another desktop), observing or acting raises `TargetUnavailable` with the reason.
+  The runtime does not retry it.
+
+### Command line
+
+`arc-cua run` executes one subtask against one macOS app and exits. It reads one
+JSON object from standard input:
+
+```json
+{
+  "app": {"pid": 4242},
+  "subtask": {
+    "goal": "Replace the document's text with the supplied text",
+    "inputs": {"text": "Hello"},
+    "verification": ["The document's text is exactly: Hello"],
+    "max_actions": 10
+  },
+  "provider": {"name": "jev", "api_key": "..."}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `app` | `{"pid": ...}`, or `{"bundle_id": "com.apple.TextEdit"}` for the first running instance (required) |
+| `subtask` | The subtask, with the fields in [JSON field types](#json-field-types) (required) |
+| `provider` | `name` (`"jev"`), `api_key`, and optionally `model` (required) |
+| `backend` | `"hybrid"` (AX + OCR, the default) or `"ax"` |
+| `timeout_s`, `min_confidence`, `min_margin` | As in `RuntimeConfig` |
+
+It prints one JSON line to standard output after every action, then a final line,
+and exits:
+
+```text
+{"type": "action", "step": 1, "action": "SET_VALUE", "target": "ax_3", "target_name": "", "value": "Hello", "state_changed": true, "confidence": 0.48, ...}
+{"type": "result", "status": "SUBTASK_COMPLETE", "reason": null, "actions_taken": 1, "application": "TextEdit", "window": "Untitled", ...}
+```
+
+Action lines carry the same fields as a history record in `result_to_dict`. The
+exit code is 0 after a result line, whatever its status. When the run cannot
+produce a result, the last line is `{"type": "error", "error": "..."}` instead:
+exit code 2 for invalid input, 1 when the app quit or has no usable window, a
+permission is missing, or the provider failed. Logs go to standard error, never
+standard output (`-v` for debug detail).
+
+Runs are stateless: each process runs one subtask. To stop a run, terminate the
+process (`SIGTERM` or `SIGINT`); it exits after putting back any windows it moved
+out of sight and returning key focus.
+
 ### Browser (Chrome)
 
 `ChromeBackend` runs the same loop in a Chrome tab, on macOS, Linux and Windows. It
@@ -228,11 +307,11 @@ extensions) are not reachable.
 
 After a mutating action, `arc-cua` waits until the desktop has reacted and gone quiet, then observes it once. The decision model decides **what to do**; the runtime decides **when the UI is ready to reason over again**.
 
-The macOS backend settles on a cheap visual probe: the frontmost window plus a small grayscale thumbnail of its on-screen area (sheets and panels included). The runtime waits up to `settle_reaction_s` (0.6 s; covers an app still busy with the previous action) for a visible reaction, then until the probe has been unchanged for `settle_quiet_s` (0.15 s), capped at `settle_timeout_s` (2 s). A caret-sized change does not count as activity. Full AX + OCR observations are not used for settling because OCR output varies slightly between passes even when the UI is identical. Backends without a `settle_probe()` method keep snapshot-based settling.
+The macOS backend settles on a cheap visual probe: the target app's front window plus a small grayscale thumbnail of the app's own windows in that area (sheets and panels included; other apps' windows covering it are not). The runtime waits up to `settle_reaction_s` (0.6 s; covers an app still busy with the previous action) for a visible reaction, then until the probe has been unchanged for `settle_quiet_s` (0.15 s), capped at `settle_timeout_s` (2 s). A caret-sized change does not count as activity. Full AX + OCR observations are not used for settling because OCR output varies slightly between passes even when the UI is identical. Backends without a `settle_probe()` method keep snapshot-based settling.
 
 `TYPE_TEXT` can press `ENTER` or `TAB` right after entering its value (`Decision.key`), so a path, search or name field can be filled and submitted in one decision. The runtime waits for the typed value to settle before pressing the key, and the history records the key with the `TYPE_TEXT` action.
 
-`CLICK` can hold a selection modifier (`Decision.click_modifier`): `MOD` (Cmd on macOS) adds the target to or removes it from the current selection, and `SHIFT` extends a range to it. This lets one subtask select several specific items, for example files to copy or move together. On macOS a modified click is always a real mouse event at the element's center, because `AXPress` ignores modifiers.
+`CLICK` can hold a selection modifier (`Decision.click_modifier`): `MOD` (Cmd on macOS) adds the target to or removes it from the current selection, and `SHIFT` extends a range to it. This lets one subtask select several specific items, for example files to copy or move together. On macOS a modified click is always a mouse event at the element's center, addressed to the app's window, because `AXPress` ignores modifiers.
 
 ### Terminal states
 
@@ -319,8 +398,8 @@ python examples/effects_demo.py
 ### macOS probes
 
 ```bash
-python examples/macos_ax_probe.py   # Inspect frontmost app's AX tree
-python examples/ocr_probe.py        # Inspect visible text via Apple Vision
+python examples/macos_ax_probe.py com.apple.TextEdit   # Inspect an app's AX tree (bundle ID or pid)
+python examples/ocr_probe.py com.apple.TextEdit        # Inspect visible text via Apple Vision
 ```
 
 ### Spotify

@@ -1,19 +1,21 @@
-import time
+"""Print the visible text Apple Vision reads in a macOS app's window.
+
+Usage:
+  python examples/ocr_probe.py com.apple.TextEdit   # or a process ID
+"""
+
+import sys
 
 from arc_cua.backends import (
+    MacOSApp,
     MacOSHybridBackend,
 )
 
-print(
-    "Switch to the app you want to inspect. "
-    "Capturing in 4 seconds..."
-)
+target = sys.argv[1] if len(sys.argv) > 1 else "com.apple.finder"
+pid = int(target) if target.isdigit() else MacOSApp.from_bundle_id(target).pid
 
-time.sleep(4)
-
-backend = MacOSHybridBackend()
-
-snapshot = backend.observe()
+with MacOSHybridBackend(pid) as backend:
+    snapshot = backend.observe()
 
 print(
     f"\n{snapshot.application} "

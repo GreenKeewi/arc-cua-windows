@@ -54,7 +54,7 @@ DesktopElement(
 
 The AX backend can currently:
 
-- inspect the frontmost application and window
+- inspect one application, given by process ID, and its window on the current desktop
 - traverse the accessibility tree
 - read names, roles, values and state
 - invoke native accessibility actions
@@ -228,14 +228,60 @@ the policy can distinguish attempted operations and avoid repeating them.
 For OCR-backed inputs, `arc-cua` uses the same macOS text-delivery strategy from Third Hand:
 
 ```text
-focus visual input → Cmd+A → brief settle → emit Unicode CGEvent key-down/up one character at a time
+click visual input → select its text → brief settle → post Unicode key-down/up events, 16 characters per burst
 ```
 
-Modifier flags are explicitly cleared for each Unicode event so the preceding `Cmd+A` cannot leak into the typed text.
+The text is selected through accessibility (`AXSelectedTextRange`) when the focused
+field supports it, otherwise through the app's Select All menu item or a `Cmd+A`
+addressed to its window. Modifier flags are explicitly cleared for each Unicode
+event so a preceding shortcut cannot leak into the typed text. Key focus returns to
+the user's window between bursts.
 
 The decision model chooses `input_key = search_query`. The runtime supplies `Subtask.inputs["search_query"]`. The decision model never invents arbitrary text.
 
 ---
+
+## Background input
+
+The macOS backends control one app, given by process ID, without taking the
+user's pointer, front app or key window (`backends/macos_background.py`).
+
+- Mouse, scroll and key events are posted to the target process with
+  `SLEventPostToPid`, and mouse events carry the target window's id and a
+  window-relative location, so WindowServer routes them to that window without
+  moving the cursor. A click is preceded by a stamped move and an off-screen
+  primer click, which Chromium-based apps require before treating a background
+  click as user activation.
+- Key events carry an event authentication message, which Chromium-based apps
+  require before accepting background keys.
+- Before an event batch, focus event records make the target window key inside
+  its app while the user's app stays frontmost; afterwards the user's key window
+  gets focus back. Without that step the user's app would stay frontmost but stop
+  receiving their keystrokes.
+- Menu key equivalents only reach the front app, so Command chords are run by
+  pressing the matching enabled menu item through accessibility. Other chords are
+  keys the window handles itself and are posted to it.
+- If the app activates itself within 1.5 s of an input, the user's previous front
+  app is activated again.
+
+All private symbols are resolved at runtime; if one is missing, input fails with
+`BackgroundInputUnavailable` instead of falling back to the user's pointer.
+
+`MacOSApp.open()` (or entering the backend as a context manager) handles apps
+with no window on screen. A minimized window, or all open windows of a hidden app,
+are moved onto a virtual display (`CGVirtualDisplay`), then unminimized or
+unhidden. WindowServer treats that display as on screen, so the app renders,
+exposes accessibility and takes input there, while the user sees nothing. Windows
+only move while out of sight, and the backend waits until every parked window's
+origin is on the virtual display. `close()` minimizes or hides them again and
+moves them back to their original positions; a terminated `arc-cua run` does the
+same on `SIGTERM` and `SIGINT`.
+
+Observation uses the app's windows on the current desktop: the AX root is the
+focused window when it is on screen, else another on-screen window, because an
+app's focused window can be on a different desktop. The settle thumbnail
+composites only the app's own windows, so the user's windows on top do not look
+like the app reacting.
 
 ## Freshness protection
 

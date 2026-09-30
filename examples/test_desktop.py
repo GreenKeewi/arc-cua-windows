@@ -1,14 +1,15 @@
+import subprocess
 import time
 
 from arc_cua import DesktopExecutor, Subtask
-from arc_cua.backends import MacOSAXBackend
+from arc_cua.backends import MacOSApp, MacOSAXBackend
 from arc_cua.policies import TypeSafeJevPolicy
 
-print("Switch to Apple Calendar.")
-print("Starting in 5 seconds...")
-time.sleep(5)
+print("Opening Apple Calendar in the background...")
+subprocess.run(["open", "-g", "-a", "Calendar"], check=True)
+time.sleep(3)
 
-backend = MacOSAXBackend()
+backend = MacOSAXBackend(MacOSApp.from_bundle_id("com.apple.iCal").pid)
 policy = TypeSafeJevPolicy()
 
 executor = DesktopExecutor(

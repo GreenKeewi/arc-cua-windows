@@ -9,6 +9,9 @@ dependencies = [
   "httpx[http2]>=0.28,<1",
 ]
 
+[project.scripts]
+arc-cua = "arc_cua.cli:main"
+
 [project.optional-dependencies]
 browser = ["websockets>=13,<18"]
 dev = ["pytest>=8.4,<9", "ruff>=0.14,<1"]

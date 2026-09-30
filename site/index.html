@@ -421,11 +421,12 @@ export TYPESAFE_API_KEY=...</code></pre>
 
   <h3>Live desktop execution</h3>
   <pre><code>from arc_cua import DesktopExecutor, Subtask, RuntimeConfig
-from arc_cua.backends import MacOSHybridBackend
+from arc_cua.backends import MacOSApp, MacOSHybridBackend
 from arc_cua.policies import TypeSafeJevPolicy
 
+pid = MacOSApp.from_bundle_id("com.spotify.client").pid
 executor = DesktopExecutor(
-    MacOSHybridBackend(),
+    MacOSHybridBackend(pid),
     TypeSafeJevPolicy(),
     config=RuntimeConfig(timeout_s=30),
 )
@@ -535,7 +536,7 @@ assert result.status == TerminalKind.SUBTASK_COMPLETE</code></pre>
   <p>Every actionable target has a semantic or visual guard (SHA-256 fingerprint of element state). Before executing a chosen mutation, the backend checks that the target still corresponds to the UI state JEV observed. A stale action is never blindly replayed.</p>
 
   <h3>Post-action settling</h3>
-  <p>After a mutating action, the runtime waits until the desktop has reacted and gone quiet, then observes it once. On macOS it settles on a cheap visual probe (frontmost window plus a small thumbnail) instead of repeated AX + OCR observations. The decision model decides <em>what to do</em>; the runtime decides <em>when the UI is ready to reason over again</em>.</p>
+  <p>After a mutating action, the runtime waits until the desktop has reacted and gone quiet, then observes it once. On macOS it settles on a cheap visual probe (the target app's front window plus a small thumbnail of its own windows) instead of repeated AX + OCR observations. The decision model decides <em>what to do</em>; the runtime decides <em>when the UI is ready to reason over again</em>.</p>
 
   <h3>Terminal states</h3>
   <div class="table-wrap">
@@ -740,8 +741,11 @@ d = execute_payload(executor, payload)</code></pre>
   <div class="api-block">
     <h3>MacOSHybridBackend</h3>
     <p>The default production backend. Combines Accessibility and Apple Vision OCR into a single element stream. Handles modal detection, OCR deduplication, and coordinate-based execution for OCR targets.</p>
-    <pre><code>from arc_cua.backends import MacOSHybridBackend
-backend = MacOSHybridBackend()</code></pre>
+    <p>Acts on one app, given by process ID, in the background: the user's pointer does not move, the window is not raised and the front app does not change. As a context manager it also reaches a minimized window or a hidden app's windows, out of sight. Raises <code>TargetUnavailable</code> once the app quits or has no usable window.</p>
+    <pre><code>from arc_cua.backends import MacOSApp, MacOSHybridBackend
+with MacOSHybridBackend(MacOSApp.from_bundle_id("com.apple.TextEdit").pid) as backend:
+    ...</code></pre>
+    <p>From any language: <code>arc-cua run</code> reads one JSON request (app, subtask, provider) on standard input, prints one JSON line per action and a final result line, and exits. See the <a href="/llms-full.txt">full reference</a>.</p>
   </div>
 
   <div class="api-block">
@@ -753,9 +757,9 @@ backend = ChromeBackend.launch("https://example.com")</code></pre>
 
   <div class="api-block">
     <h3>MacOSAXBackend</h3>
-    <p>Pure Accessibility backend. Traverses the AX tree of the frontmost application.</p>
+    <p>Pure Accessibility backend. Traverses the AX tree of one app, given by process ID, with background input.</p>
     <pre><code>from arc_cua.backends import MacOSAXBackend
-backend = MacOSAXBackend(max_elements=1200, max_depth=18)</code></pre>
+backend = MacOSAXBackend(pid, max_elements=1200, max_depth=18)</code></pre>
     <p>Supports CLICK, DOUBLE_CLICK, RIGHT_CLICK, TYPE_TEXT, SET_VALUE, PRESS_KEY, HOTKEY, SCROLL.</p>
   </div>
 

@@ -393,102 +393,11 @@ class MacOSOCRProvider:
         preferred_title: str | None = None,
     ) -> MacOSWindow | None:
 
-        Quartz, _, _, _ = _frameworks()
-
-        options = (
-            Quartz.kCGWindowListOptionOnScreenOnly
-            | Quartz.kCGWindowListExcludeDesktopElements
-        )
-
-        raw_windows = (
-            Quartz.CGWindowListCopyWindowInfo(
-                options,
-                Quartz.kCGNullWindowID,
-            )
-            or []
-        )
-
-        candidates: list[MacOSWindow] = []
+        candidates = on_screen_windows(pid)
 
         preferred = (
             preferred_title or ""
         ).strip().casefold()
-
-        for info in raw_windows:
-
-            try:
-                owner_pid = int(
-                    info.get(
-                        Quartz.kCGWindowOwnerPID,
-                        -1,
-                    )
-                )
-            except Exception:
-                continue
-
-            if owner_pid != pid:
-                continue
-
-            layer = int(
-                info.get(
-                    Quartz.kCGWindowLayer,
-                    0,
-                )
-                or 0
-            )
-
-            alpha = float(
-                info.get(
-                    Quartz.kCGWindowAlpha,
-                    1.0,
-                )
-                or 0.0
-            )
-
-            # Layer 0 = normal app window.
-            if layer != 0 or alpha <= 0:
-                continue
-
-            bounds = _window_bounds(
-                info.get(
-                    Quartz.kCGWindowBounds
-                )
-            )
-
-            if (
-                bounds is None
-                or bounds.width < 80
-                or bounds.height < 80
-            ):
-                continue
-
-            window_id = int(
-                info.get(
-                    Quartz.kCGWindowNumber,
-                    0,
-                )
-                or 0
-            )
-
-            if window_id <= 0:
-                continue
-
-            title = str(
-                info.get(
-                    Quartz.kCGWindowName,
-                    "",
-                )
-                or ""
-            )
-
-            candidates.append(
-                MacOSWindow(
-                    pid=pid,
-                    window_id=window_id,
-                    title=title,
-                    bounds=bounds,
-                )
-            )
 
         if not candidates:
             return None
@@ -518,6 +427,105 @@ class MacOSOCRProvider:
                     return window
 
         return candidates[0]
+
+
+def on_screen_windows(pid: int) -> list[MacOSWindow]:
+    """Normal (layer 0) windows of ``pid`` on screen, front to back, ignoring tiny ones."""
+
+    Quartz, _, _, _ = _frameworks()
+
+    options = (
+        Quartz.kCGWindowListOptionOnScreenOnly
+        | Quartz.kCGWindowListExcludeDesktopElements
+    )
+
+    raw_windows = (
+        Quartz.CGWindowListCopyWindowInfo(
+            options,
+            Quartz.kCGNullWindowID,
+        )
+        or []
+    )
+
+    candidates: list[MacOSWindow] = []
+
+    for info in raw_windows:
+
+        try:
+            owner_pid = int(
+                info.get(
+                    Quartz.kCGWindowOwnerPID,
+                    -1,
+                )
+            )
+        except Exception:
+            continue
+
+        if owner_pid != pid:
+            continue
+
+        layer = int(
+            info.get(
+                Quartz.kCGWindowLayer,
+                0,
+            )
+            or 0
+        )
+
+        alpha = float(
+            info.get(
+                Quartz.kCGWindowAlpha,
+                1.0,
+            )
+            or 0.0
+        )
+
+        # Layer 0 = normal app window.
+        if layer != 0 or alpha <= 0:
+            continue
+
+        bounds = _window_bounds(
+            info.get(
+                Quartz.kCGWindowBounds
+            )
+        )
+
+        if (
+            bounds is None
+            or bounds.width < 80
+            or bounds.height < 80
+        ):
+            continue
+
+        window_id = int(
+            info.get(
+                Quartz.kCGWindowNumber,
+                0,
+            )
+            or 0
+        )
+
+        if window_id <= 0:
+            continue
+
+        title = str(
+            info.get(
+                Quartz.kCGWindowName,
+                "",
+            )
+            or ""
+        )
+
+        candidates.append(
+            MacOSWindow(
+                pid=pid,
+                window_id=window_id,
+                title=title,
+                bounds=bounds,
+            )
+        )
+
+    return candidates
 
 
 def _frameworks() -> tuple[
@@ -629,29 +637,43 @@ def _capture_window(
 def window_thumbnail(
     bounds: Bounds,
     *,
+    window_ids: list[int] | None = None,
     width: int = 96,
     height: int = 64,
 ) -> bytes:
-    """Grayscale thumbnail of the on-screen pixels inside ``bounds``.
+    """Grayscale thumbnail of the pixels inside ``bounds``.
 
-    Composites every window over that region, so sheets and popovers attached to
-    the window are included. Used for cheap settle checks, not for perception.
+    Composites the given windows (an app's windows, so its sheets and popovers
+    are included, but not other apps' windows covering it), or every on-screen
+    window when none are given. Used for cheap settle checks, not for perception.
     """
 
     Quartz, _, _, _ = _frameworks()
 
-    image = Quartz.CGWindowListCreateImage(
-        Quartz.CGRectMake(
-            bounds.x,
-            bounds.y,
-            bounds.width,
-            bounds.height,
-        ),
-        Quartz.kCGWindowListOptionOnScreenOnly,
-        Quartz.kCGNullWindowID,
-        Quartz.kCGWindowImageBoundsIgnoreFraming
-        | Quartz.kCGWindowImageNominalResolution,
+    rect = Quartz.CGRectMake(
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
     )
+    options = (
+        Quartz.kCGWindowImageBoundsIgnoreFraming
+        | Quartz.kCGWindowImageNominalResolution
+    )
+
+    if window_ids:
+        image = Quartz.CGWindowListCreateImageFromArray(
+            rect,
+            list(window_ids),
+            options,
+        )
+    else:
+        image = Quartz.CGWindowListCreateImage(
+            rect,
+            Quartz.kCGWindowListOptionOnScreenOnly,
+            Quartz.kCGNullWindowID,
+            options,
+        )
 
     if image is None:
         raise PermissionError(

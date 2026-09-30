@@ -1,10 +1,11 @@
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
 
 from arc_cua import ActionKind, Bounds, DesktopElement, DesktopSnapshot
 from arc_cua.backends import macos_ax, macos_hybrid
-from arc_cua.errors import UnsupportedDesktopAction
+from arc_cua.errors import TargetUnavailable, UnsupportedDesktopAction
 from arc_cua.models import ExecutableAction
 
 
@@ -16,6 +17,15 @@ class Ref:
     def __repr__(self):
         # Remote objects can have different wrappers, or reused wrapper addresses.
         return "<AXUIElement 0x123> {pid=1}"
+
+
+def fake_app(**attributes):
+    """Stands in for MacOSApp: a running app with one on-screen window."""
+    defaults = dict(
+        pid=123, name="Editor", check_running=lambda: None, input_scope=nullcontext,
+        windows=lambda: [SimpleNamespace(window_id=1)],
+    )
+    return SimpleNamespace(**{**defaults, **attributes})
 
 
 def install_cf(monkeypatch):
@@ -75,16 +85,13 @@ def test_inline_editor_uses_main_window_without_traversing_inactive_app_menus(mo
     editor = Ref("editor")
     app = Ref("app", AXMainWindow=window, AXFocusedUIElement=editor,
               AXChildren=[window, editor, Ref("inactive menus")])
-    api = SimpleNamespace(AXUIElementCreateApplication=lambda pid: app)
-    native_app = SimpleNamespace(processIdentifier=lambda: 123, localizedName=lambda: "Editor")
-    kit = SimpleNamespace(NSWorkspace=SimpleNamespace(
-        sharedWorkspace=lambda: SimpleNamespace(frontmostApplication=lambda: native_app),
-    ))
-    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, kit))
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
     monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name))
+    monkeypatch.setattr(macos_ax, "window_id", lambda ref: 1 if ref is window else None)
     monkeypatch.setattr(macos_ax.sys, "platform", "darwin")
     monkeypatch.setattr(macos_ax.MacOSAXBackend, "_require_accessibility", staticmethod(lambda: None))
-    backend = macos_ax.MacOSAXBackend()
+    monkeypatch.setattr(macos_ax, "MacOSApp", lambda pid: fake_app(pid=pid, ax=app))
+    backend = macos_ax.MacOSAXBackend(123)
     backend._element_from_ref = lambda ref, identity, **kw: DesktopElement(
         id=identity, role="Group", name=ref.identity,
     )
@@ -123,8 +130,9 @@ def test_click_does_not_dispatch_context_menu(monkeypatch):
     monkeypatch.setattr(macos_ax, "_action_names", lambda *args: {"AXOpen", "AXShowMenu"})
     bounds = Bounds(10, 20, 30, 40)
     monkeypatch.setattr(macos_ax, "_ax_bounds", lambda *args: bounds)
-    monkeypatch.setattr(macos_ax, "_click_at", lambda bounds, **kw: pointer.append((bounds, kw)))
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.app = fake_app()
+    backend._click_at = lambda bounds, **kw: pointer.append((bounds, kw))
     backend._refs = {"target": object()}
     backend.is_fresh = lambda *args: True
     snapshot = DesktopSnapshot(application="Files", window="Folder", revision="1", elements=())
@@ -148,7 +156,7 @@ def test_freshness_rejects_item_replaced_by_same_name_at_a_different_url():
                              metadata={"url": "file:///second/report.pdf"})
     backend = object.__new__(macos_ax.MacOSAXBackend)
     backend._refs = {"item": object()}
-    backend._frontmost_pid = lambda: 123
+    backend.app = fake_app()
     backend._element_from_ref = lambda *args, **kwargs: current
     snapshot = DesktopSnapshot(application="Files", window="Folder", revision="1",
                                elements=(before,), context={"pid": 123})
@@ -174,6 +182,7 @@ def test_only_real_text_editors_offer_value_entry(monkeypatch, focused, settable
     monkeypatch.setattr(macos_ax, "_action_names", lambda *args: set())
     monkeypatch.setattr(macos_ax, "_ax_bounds", lambda *args: None)
     backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.app = fake_app()
     backend._refs = {"target": object()}
     backend.is_fresh = lambda *args: True
     element = backend._element_from_ref(backend._refs["target"], "target", None)
@@ -188,3 +197,45 @@ def test_only_real_text_editors_offer_value_entry(monkeypatch, focused, settable
         with pytest.raises(UnsupportedDesktopAction, match="label"):
             backend.execute(snapshot, action)
         assert writes == []
+
+
+def test_observe_uses_a_window_on_this_desktop_not_the_focused_one_elsewhere(monkeypatch):
+    install_cf(monkeypatch)
+    elsewhere, here = Ref("elsewhere", AXTitle="Other desktop"), Ref("here", AXTitle="This desktop")
+    app = Ref("app", AXFocusedWindow=elsewhere, AXMainWindow=elsewhere, AXWindows=[elsewhere, here])
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name))
+    ids = {"elsewhere": 7, "here": 1}
+    monkeypatch.setattr(macos_ax, "window_id", lambda ref: ids.get(getattr(ref, "identity", None)))
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.app = fake_app(ax=app)
+    backend.max_depth, backend.max_elements = 10, 10
+    backend._identities = macos_ax._AXIdentityRegistry()
+    backend._element_from_ref = lambda ref, identity, **kw: DesktopElement(
+        id=identity, role="Window", name=ref.identity,
+    )
+    snapshot = backend.observe()
+    assert snapshot.window == "This desktop"
+    assert snapshot.context["pid"] == 123
+
+
+def test_observe_fails_clearly_when_the_app_has_no_usable_window(monkeypatch):
+    def no_window():
+        raise TargetUnavailable("Editor has no open window on this desktop.")
+
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.app = fake_app(windows=lambda: [], require_window=no_window)
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
+    with pytest.raises(TargetUnavailable, match="no open window"):
+        backend.observe()
+
+
+def test_freshness_fails_clearly_once_the_app_quits():
+    def quit():
+        raise TargetUnavailable("Editor (process ID 123) quit.")
+
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.app = fake_app(check_running=quit)
+    snapshot = DesktopSnapshot(application="Editor", window="Doc", revision="1", elements=(), context={"pid": 123})
+    with pytest.raises(TargetUnavailable, match="quit"):
+        backend.is_fresh(snapshot, ExecutableAction(kind=ActionKind.PRESS_KEY, key="ENTER"))

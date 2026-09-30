@@ -139,44 +139,40 @@ def test_macos_can_encode_every_advertised_shortcut_key() -> None:
     assert KEY_NAMES <= macos_ax._KEYCODES.keys()
 
 
-@pytest.mark.parametrize(("chord", "keycode", "flags"), [
-    ("MOD+S", 1, 1), ("CTRL+ALT+SHIFT+7", 26, 14), ("SHIFT+F12", 111, 2),
-    ("ALT+ARROW_LEFT", 123, 4), ("MOD+COMMA", 43, 1),
+class RecordingApp:
+    def __init__(self):
+        self.calls = []
+
+    def press(self, code, flags=0):
+        self.calls.append(("press", code, flags))
+
+    def shortcut(self, modifiers, key, code, flags):
+        self.calls.append(("shortcut", modifiers, key, code, flags))
+
+
+class FakeQuartz:
+    kCGEventFlagMaskCommand = 1
+    kCGEventFlagMaskShift = 2
+    kCGEventFlagMaskAlternate = 4
+    kCGEventFlagMaskControl = 8
+
+
+@pytest.mark.parametrize(("chord", "modifiers", "key", "keycode", "flags"), [
+    ("MOD+S", ("MOD",), "S", 1, 1), ("CTRL+ALT+SHIFT+7", ("CTRL", "ALT", "SHIFT"), "7", 26, 14),
+    ("SHIFT+F12", ("SHIFT",), "F12", 111, 2), ("ALT+ARROW_LEFT", ("ALT",), "ARROW_LEFT", 123, 4),
+    ("MOD+COMMA", ("MOD",), "COMMA", 43, 1),
 ])
-def test_macos_posts_one_chord_with_correct_modifiers(monkeypatch, chord, keycode, flags) -> None:
-    events = []
-
-    class Quartz:
-        kCGEventFlagMaskCommand = 1
-        kCGEventFlagMaskShift = 2
-        kCGEventFlagMaskAlternate = 4
-        kCGEventFlagMaskControl = 8
-        kCGHIDEventTap = 0
-
-        @staticmethod
-        def CGEventCreateKeyboardEvent(source, code, down):
-            return {"keycode": code, "down": down, "flags": 15}
-
-        @staticmethod
-        def CGEventSetFlags(event, modifiers):
-            event["flags"] = modifiers
-
-        @staticmethod
-        def CGEventPost(tap, event):
-            events.append(event)
-
-    monkeypatch.setattr(macos_ax, "_quartz", lambda: Quartz)
-    macos_ax._press_hotkey(chord)
-    macos_ax._press_key("ENTER")
-    assert events == [
-        {"keycode": keycode, "down": True, "flags": flags},
-        {"keycode": keycode, "down": False, "flags": flags},
-        {"keycode": 36, "down": True, "flags": 0},
-        {"keycode": 36, "down": False, "flags": 0},
-    ]
+def test_macos_sends_one_chord_with_correct_modifiers(monkeypatch, chord, modifiers, key, keycode, flags) -> None:
+    monkeypatch.setattr(macos_ax, "_quartz", lambda: FakeQuartz)
+    app = RecordingApp()
+    macos_ax._press_hotkey(app, chord)
+    macos_ax._press_key(app, "ENTER")
+    assert app.calls == [("shortcut", modifiers, key, keycode, flags), ("press", 36, 0)]
 
 
-def test_invalid_chord_never_posts_a_keyboard_event(monkeypatch) -> None:
+def test_invalid_chord_never_reaches_the_app(monkeypatch) -> None:
     monkeypatch.setattr(macos_ax, "_quartz", lambda: pytest.fail("Invalid chord reached the OS"))
+    app = RecordingApp()
     with pytest.raises(UnsupportedDesktopAction):
-        macos_ax._press_hotkey("MOD+S,MOD+W")
+        macos_ax._press_hotkey(app, "MOD+S,MOD+W")
+    assert app.calls == []

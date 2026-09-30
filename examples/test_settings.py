@@ -6,6 +6,7 @@ from arc_cua import (
     Subtask,
 )
 from arc_cua.backends import (
+    MacOSApp,
     MacOSHybridBackend,
 )
 from arc_cua.policies import (
@@ -36,6 +37,7 @@ time.sleep(4)
 
 executor = DesktopExecutor(
     backend=MacOSHybridBackend(
+        MacOSApp.from_bundle_id("com.apple.systempreferences").pid,
         ocr_recognition_level="fast",
         ocr_min_confidence=0.45,
     ),

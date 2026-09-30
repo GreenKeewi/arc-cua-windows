@@ -9,9 +9,11 @@ import time
 from datetime import datetime
 from typing import Any
 
-from ..errors import StaleDesktopState, UnsupportedDesktopAction
+from ..errors import StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
 from ..keyboard import parse_hotkey
 from ..models import ActionKind, Bounds, DesktopElement, DesktopSnapshot, ExecutableAction
+from .macos_app import MacOSApp
+from .macos_background import window_id
 
 logger = logging.getLogger(__name__)
 
@@ -22,21 +24,45 @@ _VALUE_ROLES = _TEXT_ROLES | {"AXSlider", "AXIncrementor"}
 class MacOSAXBackend:
     """Experimental semantic backend for macOS Accessibility (AX).
 
+    Observes and controls one app, given by process ID, whether or not it is
+    frontmost. Input reaches it in the background: the user's pointer, front app
+    and key window are left alone. Raises ``TargetUnavailable`` once the app quits
+    or has no usable window. Use the backend as a context manager to also reach a
+    minimized window or a hidden app's windows, out of sight.
+
     It intentionally does not use application scripting APIs. The first version
     handles AX-native activation/value entry plus keyboard/scroll events. Custom
     canvas semantics (timelines, node graphs, viewports) belong in a separate
     perception source that can later be merged into the same DesktopSnapshot.
     """
 
-    def __init__(self, *, max_elements: int = 1200, max_depth: int = 18) -> None:
+    def __init__(self, pid: int, *, max_elements: int = 1200, max_depth: int = 18) -> None:
         if sys.platform != "darwin":
             raise RuntimeError("MacOSAXBackend is only available on macOS")
         self.max_elements = max_elements
         self.max_depth = max_depth
         self._refs: dict[str, Any] = {}
         self._identities = _AXIdentityRegistry()
-        self._pid: int | None = None
         self._require_accessibility()
+        self.app = MacOSApp(pid)
+
+    @property
+    def pid(self) -> int:
+        return self.app.pid
+
+    def open(self) -> None:
+        """Make sure the app has a window to work in; see ``MacOSApp.open``."""
+        self.app.open()
+
+    def close(self) -> None:
+        self.app.close()
+
+    def __enter__(self) -> MacOSAXBackend:
+        self.open()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
 
     def register_ref(self, element_id: str, ref: Any) -> None:
         self._refs[element_id] = ref
@@ -45,21 +71,29 @@ class MacOSAXBackend:
         return self._identities.id_for(ref)
 
     def observe(self) -> DesktopSnapshot:
-        AS, AppKit = _frameworks()
+        AS, _ = _frameworks()
+        on_screen = {window.window_id for window in self.app.windows()}
+        if not on_screen:
+            self.app.require_window()  # Raises TargetUnavailable with the reason.
         self._identities.begin_observation()
-        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
-        if app is None:
-            raise RuntimeError("No frontmost macOS application")
-        pid = int(app.processIdentifier())
-        app_name = str(app.localizedName() or f"pid:{pid}")
-        app_ref = AS.AXUIElementCreateApplication(pid)
+        pid = self.app.pid
+        app_name = self.app.name
+        app_ref = self.app.ax
         focused = _attr(AS, app_ref, "AXFocusedUIElement")
-        root = (
-            _attr(AS, app_ref, "AXFocusedWindow")
-            or _attr(AS, app_ref, "AXMainWindow")
-            or (_attr(AS, focused, "AXWindow") if focused is not None else None)
-            or app_ref
-        )
+        candidates = [
+            _attr(AS, app_ref, "AXFocusedWindow"),
+            _attr(AS, app_ref, "AXMainWindow"),
+            _attr(AS, focused, "AXWindow") if focused is not None else None,
+            *(_attr(AS, app_ref, "AXWindows") or ()),
+        ]
+        # The focused window can be on another desktop; observe one the app shows here.
+        root = next((w for w in candidates if w is not None and window_id(w) in on_screen), None)
+        if root is None:
+            self.app.check_running()
+            raise TargetUnavailable(f"{app_name} exposes no on-screen window to accessibility.")
+        focused_window = window_id(_attr(AS, focused, "AXWindow")) if focused is not None else None
+        if focused_window is not None and focused_window not in on_screen:
+            focused = None
         window_title = str(_attr(AS, root, "AXTitle") or app_name)
 
         refs: dict[str, Any] = {}
@@ -71,7 +105,6 @@ class MacOSAXBackend:
         if focused is not None:
             self._walk(AS, focused, elements, refs, visited, parent_id=None, depth=0)
         self._refs = refs
-        self._pid = pid
         logger.debug("ax observe app=%r elements=%d", app_name, len(elements))
 
         revision_payload = [
@@ -99,7 +132,8 @@ class MacOSAXBackend:
         )
 
     def is_fresh(self, snapshot: DesktopSnapshot, action: ExecutableAction) -> bool:
-        if snapshot.context.get("pid") != self._frontmost_pid():
+        self.app.check_running()
+        if snapshot.context.get("pid") != self.app.pid:
             return False
         if action.target_id:
             ref = self._refs.get(action.target_id)
@@ -128,18 +162,23 @@ class MacOSAXBackend:
         if not self.is_fresh(snapshot, action):
             raise StaleDesktopState("macOS accessibility target changed before execution")
 
-        AS, _ = _frameworks()
         if action.kind == ActionKind.WAIT:
             time.sleep(0.1)
             return
+        # Accessibility actions can activate some apps too; the scope hands the front back.
+        with self.app.input_scope():
+            self._execute(action)
+
+    def _execute(self, action: ExecutableAction) -> None:
+        AS, _ = _frameworks()
         if action.kind == ActionKind.PRESS_KEY:
-            _press_key(action.key or "")
+            _press_key(self.app, action.key or "")
             return
         if action.kind == ActionKind.HOTKEY:
-            _press_hotkey(action.hotkey or "")
+            _press_hotkey(self.app, action.hotkey or "")
             return
         if action.kind == ActionKind.SCROLL:
-            _scroll(action.scroll_direction or "DOWN")
+            self.app.scroll(action.scroll_direction or "DOWN")
             return
 
         if not action.target_id:
@@ -154,7 +193,7 @@ class MacOSAXBackend:
                 bounds = _ax_bounds(AS, ref)
                 if bounds is None:
                     raise UnsupportedDesktopAction("Modified click requires resolvable screen position")
-                _click_at(bounds, count=1, button="left", flags=modifier_flags((action.click_modifier,)))
+                self._click_at(bounds, count=1, button="left", flags=modifier_flags((action.click_modifier,)))
                 return
             actions = _action_names(AS, ref)
             if "AXPress" in actions:
@@ -165,14 +204,14 @@ class MacOSAXBackend:
             bounds = _ax_bounds(AS, ref)
             if bounds is None:
                 raise UnsupportedDesktopAction("Click requires AXPress or resolvable screen position")
-            _click_at(bounds, count=1, button="left")
+            self._click_at(bounds, count=1, button="left")
             return
 
         if action.kind in {ActionKind.DOUBLE_CLICK, ActionKind.RIGHT_CLICK}:
             bounds = _ax_bounds(AS, ref)
             if bounds is None:
                 raise UnsupportedDesktopAction(f"{action.kind.value} requires resolvable screen position")
-            _click_at(
+            self._click_at(
                 bounds,
                 count=2 if action.kind == ActionKind.DOUBLE_CLICK else 1,
                 button="right" if action.kind == ActionKind.RIGHT_CLICK else "left",
@@ -361,10 +400,8 @@ class MacOSAXBackend:
             metadata=metadata,
         )
 
-    def _frontmost_pid(self) -> int | None:
-        _, AppKit = _frameworks()
-        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
-        return int(app.processIdentifier()) if app is not None else None
+    def _click_at(self, bounds: Bounds, *, count: int, button: str, flags: int = 0) -> None:
+        self.app.click(bounds, count=count, right=button == "right", flags=flags)
 
     @staticmethod
     def _require_accessibility() -> None:
@@ -772,22 +809,14 @@ _KEYCODES = {
 }
 
 
-def _post_key(code: int, flags: int = 0) -> None:
-    Q = _quartz()
-    for down in (True, False):
-        event = Q.CGEventCreateKeyboardEvent(None, code, down)
-        Q.CGEventSetFlags(event, flags)
-        Q.CGEventPost(Q.kCGHIDEventTap, event)
-
-
-def _press_key(key: str) -> None:
+def _press_key(app: MacOSApp, key: str) -> None:
     code = _KEYCODES.get(key)
     if code is None:
         raise UnsupportedDesktopAction(f"Unsupported macOS key: {key}")
-    _post_key(code)
+    app.press(code)
 
 
-def _press_hotkey(hotkey: str) -> None:
+def _press_hotkey(app: MacOSApp, hotkey: str) -> None:
     try:
         modifiers, key = parse_hotkey(hotkey)
     except ValueError as exc:
@@ -795,7 +824,7 @@ def _press_hotkey(hotkey: str) -> None:
     code = _KEYCODES.get(key)
     if code is None:
         raise UnsupportedDesktopAction(f"Unsupported macOS hotkey key: {key}")
-    _post_key(code, modifier_flags(modifiers))
+    app.shortcut(modifiers, key, code, modifier_flags(modifiers))
 
 
 def modifier_flags(modifiers) -> int:
@@ -813,24 +842,6 @@ def modifier_flags(modifiers) -> int:
             raise UnsupportedDesktopAction(f"Unsupported macOS modifier: {modifier}")
         flags |= masks[modifier]
     return flags
-
-
-def _scroll(direction: str) -> None:
-    Q = _quartz()
-    vertical = 0
-    horizontal = 0
-    if direction == "UP":
-        vertical = 450
-    elif direction == "DOWN":
-        vertical = -450
-    elif direction == "LEFT":
-        horizontal = 450
-    elif direction == "RIGHT":
-        horizontal = -450
-    else:
-        raise UnsupportedDesktopAction(f"Unknown scroll direction: {direction}")
-    event = Q.CGEventCreateScrollWheelEvent(None, Q.kCGScrollEventUnitPixel, 2, vertical, horizontal)
-    Q.CGEventPost(Q.kCGHIDEventTap, event)
 
 
 def _ax_bounds(AS: Any, ref: Any) -> Bounds | None:
@@ -854,33 +865,3 @@ def _bounds_from_values(AS: Any, pos: Any, size: Any) -> Bounds | None:
     if w <= 0 or h <= 0:
         return None
     return Bounds(x=x, y=y, width=w, height=h)
-
-
-def _click_at(bounds: Bounds, *, count: int, button: str, flags: int = 0) -> None:
-    Q = _quartz()
-    point = bounds.center
-    if button == "right":
-        mouse_button = Q.kCGMouseButtonRight
-        down_type = Q.kCGEventRightMouseDown
-        up_type = Q.kCGEventRightMouseUp
-    else:
-        mouse_button = Q.kCGMouseButtonLeft
-        down_type = Q.kCGEventLeftMouseDown
-        up_type = Q.kCGEventLeftMouseUp
-
-    move = Q.CGEventCreateMouseEvent(None, Q.kCGEventMouseMoved, point, mouse_button)
-    Q.CGEventSetFlags(move, 0)
-    Q.CGEventPost(Q.kCGHIDEventTap, move)
-
-    for i in range(count):
-        click_state = i + 1 if count > 1 else 1
-        down = Q.CGEventCreateMouseEvent(None, down_type, point, mouse_button)
-        up = Q.CGEventCreateMouseEvent(None, up_type, point, mouse_button)
-        Q.CGEventSetFlags(down, flags)
-        Q.CGEventSetFlags(up, flags)
-        Q.CGEventSetIntegerValueField(down, Q.kCGMouseEventClickState, click_state)
-        Q.CGEventSetIntegerValueField(up, Q.kCGMouseEventClickState, click_state)
-        Q.CGEventPost(Q.kCGHIDEventTap, down)
-        Q.CGEventPost(Q.kCGHIDEventTap, up)
-        if i + 1 < count:
-            time.sleep(0.06)

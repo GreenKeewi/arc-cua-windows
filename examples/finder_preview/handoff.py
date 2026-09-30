@@ -17,7 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from arc_cua import DesktopExecutor, RuntimeConfig, result_to_dict, subtask_from_dict
-from arc_cua.backends import MacOSHybridBackend
+from arc_cua.backends import MacOSApp, MacOSHybridBackend
 from arc_cua.policies import TypeSafeJevPolicy
 
 REPO = Path(__file__).resolve().parents[2]
@@ -48,10 +48,13 @@ def error_details(exc: Exception) -> dict:
     }
 
 
+BUNDLE_IDS = {"Finder": "com.apple.finder", "Preview": "com.apple.Preview"}
+
+
 def activate_app(name: str) -> None:
     import AppKit
 
-    expected = {"Finder": "com.apple.finder", "Preview": "com.apple.Preview"}[name]
+    expected = BUNDLE_IDS[name]
     current = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
     if current is not None and current.bundleIdentifier() == expected:
         return
@@ -111,7 +114,7 @@ class TracedPolicy:
 
 
 class HandoffSession:
-    """One policy client and desktop backend reused across handoffs.
+    """One policy client, and one desktop backend per app, reused across handoffs.
 
     The CLI runs a single handoff per process. A caller that plans several
     subtasks in-process can keep one session to avoid per-handoff startup.
@@ -119,9 +122,15 @@ class HandoffSession:
 
     def __init__(self) -> None:
         self.policy = TypeSafeJevPolicy()
-        self.backend = MacOSHybridBackend()
+        self.backends: dict[int, MacOSHybridBackend] = {}
         self._log = None
         self.policy.client.event_hooks["response"].append(self._log_provider_error)
+
+    def backend_for(self, app: str) -> MacOSHybridBackend:
+        pid = MacOSApp.from_bundle_id(BUNDLE_IDS[app]).pid
+        if pid not in self.backends:
+            self.backends[pid] = MacOSHybridBackend(pid)
+        return self.backends[pid]
 
     def _log_provider_error(self, response) -> None:
         if response.is_error and self._log is not None:
@@ -147,8 +156,8 @@ class HandoffSession:
             self._log = log
             traced = TracedPolicy(self.policy, log)
             try:
-                executor = DesktopExecutor(self.backend, traced, config=RuntimeConfig(timeout_s=timeout))
                 activate_app(app)
+                executor = DesktopExecutor(self.backend_for(app), traced, config=RuntimeConfig(timeout_s=timeout))
                 result = None
                 recorded_steps = set()
                 for event in executor.run_iter(task):
