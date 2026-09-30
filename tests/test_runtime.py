@@ -417,10 +417,10 @@ def test_click_modifier_is_only_valid_on_click() -> None:
 # --- min_confidence ---
 
 
-def _run_with_threshold(decisions, threshold):
+def _run_with_threshold(decisions, threshold, *, margin=None):
     backend = StateMachineBackend({"value": ""}, snapshot, transition)
     task = Subtask(goal="Search", verification=("Search contains x",), inputs={"query": "x"})
-    config = RuntimeConfig(min_confidence=threshold)
+    config = RuntimeConfig(min_confidence=threshold, min_margin=margin)
     return backend, DesktopExecutor(backend, ScriptedPolicy(decisions), config=config).run(task)
 
 
@@ -456,3 +456,15 @@ def test_min_confidence_must_be_a_probability() -> None:
 
     with pytest.raises(ValueError, match="min_confidence"):
         RuntimeConfig(min_confidence=1.5)
+    with pytest.raises(ValueError, match="min_margin"):
+        RuntimeConfig(min_margin=-0.1)
+
+
+def test_near_tie_returns_needs_agent_without_acting() -> None:
+    backend, result = _run_with_threshold(
+        [Decision(kind=ActionKind.TYPE_TEXT, target_id="search", input_key="query", confidence=0.9, margin=0.02)],
+        None, margin=0.1,
+    )
+    assert result.status == TerminalKind.NEEDS_AGENT
+    assert backend.state["value"] == ""
+    assert "margin 0.02 for TYPE_TEXT is below min_margin 0.10" in result.reason

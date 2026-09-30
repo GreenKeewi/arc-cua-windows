@@ -6,6 +6,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from ..errors import (
@@ -21,7 +22,7 @@ from ..models import (
 )
 from .macos_ax import MacOSAXBackend, copy_attributes, modifier_flags
 from .macos_events import AXEventMonitor
-from .macos_ocr import MacOSOCRProvider, window_screenshot, window_thumbnail
+from .macos_ocr import MacOSOCRProvider, _normalize_ocr_text, png_image, window_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +157,11 @@ class MacOSHybridBackend:
             preferred_window_title=preferred_title,
         )
 
-        ocr_elements = _dedupe_ocr(
-            ocr_capture.elements
+        ocr_elements = _drop_ocr_seen_by_ax(
+            _dedupe_ocr(
+                ocr_capture.elements
+            ),
+            ax_elements,
         )
 
         if (
@@ -263,6 +267,11 @@ class MacOSHybridBackend:
             captured_at_ms=round(
                 time.time() * 1000
             ),
+            screenshot=(
+                partial(png_image, ocr_capture.image)
+                if ocr_capture.image is not None
+                else None
+            ),
         )
 
 
@@ -290,19 +299,6 @@ class MacOSHybridBackend:
             window_thumbnail(bounds),
             events,
         )
-
-    def capture_image(self) -> bytes | None:
-        """PNG of the frontmost window, for decision providers that accept images."""
-
-        pid = self.ocr.frontmost_pid()
-        window = (
-            self.ocr.front_window(pid)
-            if pid is not None
-            else None
-        )
-        if window is None:
-            return None
-        return window_screenshot(window.bounds)
 
     def is_fresh(
         self,
@@ -646,6 +642,43 @@ def _dedupe_ocr(
         if not duplicate:
             kept.append(candidate)
 
+    return tuple(kept)
+
+
+def _drop_ocr_seen_by_ax(
+    ocr_elements: tuple[DesktopElement, ...],
+    ax_elements: tuple[DesktopElement, ...],
+) -> tuple[DesktopElement, ...]:
+    # Drop OCR text that an actionable accessibility element already represents,
+    # centered inside its bounds. The AX element has stronger semantics, and one
+    # control should not be offered under two ids.
+    #
+    # Names match by containment: fast OCR often reads a truncated label ("Norm"
+    # for a tab titled "Normal | ..."). Values must be mostly covered by the OCR
+    # text: a field's own contents match, but one line of a terminal or document
+    # whose value holds all of its text does not, since OCR may be the only way
+    # to target that line.
+
+    labelled = [
+        (
+            element.bounds,
+            _normalize_ocr_text(element.name or ""),
+            _normalize_ocr_text(element.value) if isinstance(element.value, str) else "",
+        )
+        for element in ax_elements
+        if element.visible and element.actions and element.bounds is not None
+    ]
+
+    kept = []
+    for element in ocr_elements:
+        text = _normalize_ocr_text(element.name)
+        if element.bounds is not None and len(text) >= 3 and any(
+            (text in name or (text in value and 2 * len(text) >= len(value)))
+            and _bounds_contains_point(bounds, element.bounds.center)
+            for bounds, name, value in labelled
+        ):
+            continue
+        kept.append(element)
     return tuple(kept)
 
 

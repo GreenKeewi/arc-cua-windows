@@ -208,20 +208,23 @@ is contradicted or cannot be established. These checks are model judgements;
 use `RuntimeConfig.verify` or caller-side validation when completion needs an
 independent check.
 
-**Screenshot completion checks.** With a provider that accepts images, pass a
-screenshot source, such as `ChoicePolicy(transport, screenshot=backend.capture_image)`.
-When the model proposes `SUBTASK_COMPLETE`, the policy asks the verification
-questions again with a PNG of the current window attached; those answers decide
-completion. Ordinary steps send no image, so only a completion costs an extra
-request. On macOS the image is the frontmost window's on-screen area, sheets
-included, scaled to at most 1280 px on the longest side. JEV does not accept
-images, so `TypeSafeJevPolicy` does not offer this.
+**Screenshot completion checks.** With a provider that accepts images, use
+`ChoicePolicy(transport, screenshot_checks=True)`. When the model proposes
+`SUBTASK_COMPLETE`, the policy asks the verification questions again with a PNG
+attached; those answers decide completion. The image is the one the snapshot's
+elements were read from (`DesktopSnapshot.screenshot`), not a later capture, so it
+cannot show a different state than the model judged. Ordinary steps send no image,
+so only a completion costs an extra request. On macOS it is the window image OCR
+read, scaled to at most 1280 px on the longest side and encoded only when needed.
+JEV does not accept images, so `TypeSafeJevPolicy` does not offer this.
 
-**Confidence threshold.** `RuntimeConfig(min_confidence=0.6)` returns
+**Confidence and margin thresholds.** `RuntimeConfig(min_confidence=0.6)` returns
 `NEEDS_AGENT` instead of acting, or completing, when a decision's confidence is
-below the threshold. A `ChoicePolicy` decision's confidence is that of the weakest
-answer it uses (operation, target, input, key, completion checks). `BLOCKED` and
-`NEEDS_AGENT` are never gated, and decisions without a confidence are not gated.
+below the threshold. `RuntimeConfig(min_margin=0.1)` does the same for near-ties:
+when the chosen option's probability leads the runner-up's by less than the margin.
+A `ChoicePolicy` decision's confidence and margin are those of the weakest answer it
+uses (operation, target, input, key, completion checks). `BLOCKED` and
+`NEEDS_AGENT` are never gated, and decisions that don't report a value are not gated.
 
 ---
 

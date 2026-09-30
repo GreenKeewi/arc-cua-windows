@@ -44,10 +44,15 @@ class RuntimeConfig:
     # Return NEEDS_AGENT instead of acting (or completing) when a decision's
     # confidence is below this. Decisions that report no confidence are not gated.
     min_confidence: float | None = None
+    # Same, when the chosen option's probability leads the runner-up's by less
+    # than this (a near-tie). Decisions that report no margin are not gated.
+    min_margin: float | None = None
 
     def __post_init__(self) -> None:
-        if self.min_confidence is not None and not 0 <= self.min_confidence <= 1:
-            raise ValueError("RuntimeConfig.min_confidence must be between 0 and 1")
+        for name in ("min_confidence", "min_margin"):
+            value = getattr(self, name)
+            if value is not None and not 0 <= value <= 1:
+                raise ValueError(f"RuntimeConfig.{name} must be between 0 and 1")
 
 
 class DesktopExecutor:
@@ -200,14 +205,19 @@ class DesktopExecutor:
             return True
         return self.config.verify(snapshot, subtask)
 
-    def _below_min_confidence(self, decision: Decision) -> bool:
+    def _gate_reason(self, decision: Decision) -> str | None:
         """Gate actions and completions; BLOCKED/NEEDS_AGENT already hand back."""
-        threshold = self.config.min_confidence
-        if threshold is None or decision.confidence is None:
-            return False
         if decision.terminal not in (None, TerminalKind.SUBTASK_COMPLETE):
-            return False
-        return decision.confidence < threshold
+            return None
+        what = decision.kind.value if decision.kind is not None else decision.terminal.value
+        checks = (
+            ("confidence", decision.confidence, self.config.min_confidence),
+            ("margin", decision.margin, self.config.min_margin),
+        )
+        for name, value, threshold in checks:
+            if threshold is not None and value is not None and value < threshold:
+                return f"Decision {name} {value:.2f} for {what} is below min_{name} {threshold:.2f}."
+        return None
 
     def _make_record(
         self,
@@ -275,19 +285,16 @@ class DesktopExecutor:
             step += 1
             decision = self.policy.decide(subtask=subtask, snapshot=snapshot, history=history)
 
-            if self._below_min_confidence(decision):
-                what = decision.kind.value if decision.kind is not None else decision.terminal.value
+            gate_reason = self._gate_reason(decision)
+            if gate_reason is not None:
                 result = ExecutionResult(
                     status=TerminalKind.NEEDS_AGENT,
                     subtask=subtask,
                     final_snapshot=snapshot,
                     history=tuple(history),
-                    reason=(
-                        f"Decision confidence {decision.confidence:.2f} for {what} is below "
-                        f"min_confidence {self.config.min_confidence:.2f}."
-                    ),
+                    reason=gate_reason,
                 )
-                logger.debug("low confidence step=%d %s confidence=%.2f", step, what, decision.confidence)
+                logger.debug("gated step=%d: %s", step, gate_reason)
                 yield StepEvent(step=step, snapshot=snapshot, decision=decision, result=result)
                 return result
 

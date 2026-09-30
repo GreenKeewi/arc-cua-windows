@@ -24,8 +24,8 @@ class FakeTransport:
         }, "model": "fake-1"}
 
 
-def snapshot() -> DesktopSnapshot:
-    return DesktopSnapshot(application="Editor", window="Document", revision="1", elements=(
+def snapshot(screenshot=None) -> DesktopSnapshot:
+    return DesktopSnapshot(application="Editor", window="Document", revision="1", screenshot=screenshot, elements=(
         DesktopElement(id="save", role="Button", name="Save", actions=(ActionKind.CLICK,)),
         DesktopElement(id="cancel", role="Button", name="Cancel", actions=(ActionKind.CLICK,)),
     ))
@@ -116,31 +116,57 @@ class ImageTransport(FakeTransport):
 def test_completion_checks_are_repeated_with_a_screenshot(image_answer, terminal) -> None:
     transport = ImageTransport({"operation": "SUBTASK_COMPLETE", "verification_0": "SATISFIED"},
                                {"verification_0": image_answer})
-    decision = ChoicePolicy(transport, screenshot=lambda: b"png").decide(
-        subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
+    decision = ChoicePolicy(transport, screenshot_checks=True).decide(
+        subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(lambda: b"png"), history=(),
     )
     assert decision.terminal == terminal
     assert transport.images == [(), (b"png",)]
     state, questions = transport.calls[1]
     assert set(questions) == {"verification_0"}
-    assert "image of the current window" in questions["verification_0"]["instructions"]["rules"]
+    rules = questions["verification_0"]["instructions"]["rules"]
+    assert "image of the window, captured with state.desktop.elements" in rules
     assert decision.raw["image_verification"]["answers"]["verification_0"]["choice"] == image_answer
 
 
 def test_screenshots_are_not_taken_for_ordinary_steps() -> None:
     transport = ImageTransport({"operation": "CLICK", "click_target": "save", "click_modifier": "NONE"}, {})
-    ChoicePolicy(transport, screenshot=lambda: pytest.fail("no screenshot needed")).decide(
-        subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
+    ChoicePolicy(transport, screenshot_checks=True).decide(
+        subtask=Subtask(goal="Save", verification=("Saved",)),
+        snapshot=snapshot(lambda: pytest.fail("no screenshot needed")), history=(),
     )
     assert transport.images == [()]
 
 
 def test_screenshots_require_a_provider_that_accepts_images() -> None:
     with pytest.raises(ValueError, match="Fake does not accept images"):
-        ChoicePolicy(FakeTransport({}), screenshot=lambda: b"png")
+        ChoicePolicy(FakeTransport({}), screenshot_checks=True)
     policy = TypeSafeJevPolicy(api_key="test")
     try:
         with pytest.raises(ValueError, match="JEV does not accept images"):
             policy.transport.ask({}, {}, images=(b"png",))
     finally:
         policy.transport.client.close()
+
+
+def test_completion_is_not_accepted_without_the_snapshot_pixels() -> None:
+    transport = ImageTransport({"operation": "SUBTASK_COMPLETE", "verification_0": "SATISFIED"}, {})
+    with pytest.raises(RuntimeError, match="Snapshot has no screenshot"):
+        ChoicePolicy(transport, screenshot_checks=True).decide(
+            subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
+        )
+
+
+def test_margin_is_the_smallest_lead_among_the_answers_used() -> None:
+    transport = FakeTransport({"operation": "CLICK", "click_target": "save", "click_modifier": "NONE"})
+    original = transport.ask
+
+    def ask(state, questions, **kwargs):
+        result = original(state, questions)
+        result["answers"]["click_target"]["probabilities"] = {"save": 0.55, "cancel": 0.45}
+        return result
+
+    transport.ask = ask
+    decision = ChoicePolicy(transport).decide(
+        subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
+    )
+    assert decision.margin == pytest.approx(0.1)

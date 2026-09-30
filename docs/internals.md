@@ -126,6 +126,17 @@ Q Whatdoyouwantto play
 
 `arc-cua` avoids using exact OCR text as visual identity. OCR regions use coarse spatial identity, and overlapping detections are deduplicated before they are exposed to JEV.
 
+OCR text that an actionable accessibility element already represents is also dropped,
+so one control is offered under one id, with the stronger AX semantics. The OCR
+region's center must lie inside the element's bounds, and its normalized text
+(3+ characters) must either appear in the element's name, or cover at least half
+of its value. Names match by containment because fast OCR often reads a truncated
+label, such as `Norm` for a tab titled `Normal | Applied research`. Values need
+the coverage rule because a terminal or document exposes all of its text as one
+value; its individual lines stay targetable through OCR. In a Chrome window this
+removed 3 of 82 OCR regions, since Chrome exposes most page content as unnamed
+groups, and nothing in a terminal.
+
 This keeps small OCR fluctuations from looking like entirely new UI state.
 
 ---
@@ -170,6 +181,10 @@ such as operation, target and input for `TYPE_TEXT`, or operation plus every
 verification answer for `SUBTASK_COMPLETE`. Speculative heads that were not
 consumed do not affect it. `RuntimeConfig.min_confidence` compares against this
 value before any action or completion is accepted.
+
+`Decision.margin` is the smallest lead of the chosen option's probability over the
+runner-up's among the same answers. `RuntimeConfig.min_margin` refuses near-ties,
+including exact ties, which answer validation otherwise accepts.
 
 ### Subtask shortcuts
 
@@ -250,17 +265,17 @@ preserved in the terminal execution result.
 
 ### Screenshot completion checks
 
-When `ChoicePolicy` has a `screenshot` source, the transport must set
+With `ChoicePolicy(transport, screenshot_checks=True)`, the transport must set
 `supports_images = True`. After the first request proposes `SUBTASK_COMPLETE`,
-the policy calls the source once and sends a second request with the same state,
-only the verification questions, and the PNG in `images`. Their instructions add
-that the attached image shows the current window and takes precedence when it
-disagrees with the element table. The second request's answers replace the first
-request's verification answers. Its response is kept in
-`Decision.raw["image_verification"]`, and its latency is added to the decision's.
-A source that returns no image raises, so completion is never accepted unchecked.
+the policy calls `snapshot.screenshot()` and sends a second request with the same
+state, only the verification questions, and the PNG in `images`. Their instructions
+add that the image was captured with the element table and takes precedence when
+they disagree. The second request's answers replace the first request's
+verification answers. Its response is kept in `Decision.raw["image_verification"]`,
+and its latency is added to the decision's. A snapshot without a screenshot raises,
+so completion is never accepted unchecked.
 
-`MacOSHybridBackend.capture_image()` captures the frontmost window's on-screen
-area, including sheets and panels, the same region as the settle probe. It is
-scaled to at most 1280 px on the longest side and encoded as PNG. It takes about
-45 ms warm on Apple Silicon.
+The image is bound to the snapshot: `MacOSHybridBackend.observe()` keeps the window
+image that OCR read and sets `DesktopSnapshot.screenshot` to encode it on demand
+(scaled to at most 1280 px on the longest side; about 25 ms on Apple Silicon). A
+later capture could show a state the model never saw.

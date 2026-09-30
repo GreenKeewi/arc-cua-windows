@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .keyboard import parse_hotkey
 
@@ -116,6 +116,9 @@ class DesktopSnapshot:
     elements: tuple[DesktopElement, ...]
     context: Mapping[str, Any] = field(default_factory=dict)
     captured_at_ms: int | None = None
+    # Returns a PNG of the pixels this snapshot was observed from, or None.
+    # Backends that capture the screen during observe() set it; encoding is lazy.
+    screenshot: Callable[[], bytes | None] | None = field(default=None, repr=False, compare=False)
     _index: dict[str, DesktopElement] | None = field(
         default=None, init=False, repr=False, compare=False,
     )
@@ -218,6 +221,9 @@ class Decision:
     drag_dy: float | None = None
     click_modifier: str | None = None
     confidence: float | None = None
+    # Smallest gap between the chosen option's probability and the runner-up's
+    # among the answers the decision uses. None when the policy does not report it.
+    margin: float | None = None
     latency_ms: int | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
     reason: str | None = None

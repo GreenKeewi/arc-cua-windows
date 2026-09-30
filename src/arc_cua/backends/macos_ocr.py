@@ -5,7 +5,7 @@ import logging
 import math
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..models import ActionKind, Bounds, DesktopElement
@@ -22,6 +22,8 @@ class OCRCapture:
     window_bounds: Bounds
     elements: tuple[DesktopElement, ...]
     captured_at_ms: int
+    # The CGImage the elements were recognized from, kept for png_image().
+    image: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +364,7 @@ class MacOSOCRProvider:
             captured_at_ms=round(
                 time.time() * 1000
             ),
+            image=image,
         )
 
     def frontmost_pid(
@@ -679,37 +682,17 @@ def window_thumbnail(
     )
 
 
-def window_screenshot(
-    bounds: Bounds,
+def png_image(
+    image: Any,
     *,
     max_side: int = 1280,
 ) -> bytes:
-    """PNG of the on-screen pixels inside ``bounds``, longest side at most ``max_side``.
+    """PNG of a captured CGImage, longest side at most ``max_side``.
 
-    Like ``window_thumbnail``, sheets and popovers over the window are included.
-    Used when a decision provider accepts images.
+    Used to show a decision provider the same pixels OCR read for a snapshot.
     """
 
     Quartz, _, _, AppKit = _frameworks()
-
-    image = Quartz.CGWindowListCreateImage(
-        Quartz.CGRectMake(
-            bounds.x,
-            bounds.y,
-            bounds.width,
-            bounds.height,
-        ),
-        Quartz.kCGWindowListOptionOnScreenOnly,
-        Quartz.kCGNullWindowID,
-        Quartz.kCGWindowImageBoundsIgnoreFraming
-        | Quartz.kCGWindowImageNominalResolution,
-    )
-
-    if image is None:
-        raise PermissionError(
-            "Could not capture the screen. "
-            "Check Screen Recording permission."
-        )
 
     source_width = Quartz.CGImageGetWidth(image)
     source_height = Quartz.CGImageGetHeight(image)

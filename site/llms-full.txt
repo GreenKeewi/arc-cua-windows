@@ -212,9 +212,9 @@ TypeSafeJevPolicy asks a separate choice head for each verification criterion.
 A proposed SUBTASK_COMPLETE becomes NEEDS_AGENT, with an explanatory reason, if
 any criterion is NOT_SATISFIED or UNKNOWN. These are model judgements, not an
 independent proof; callers can inspect the result and supply RuntimeConfig.verify.
-With an image-capable transport, ChoicePolicy(transport, screenshot=backend.capture_image)
-re-asks the verification heads with a PNG of the current window before accepting
-completion.
+With an image-capable transport, ChoicePolicy(transport, screenshot_checks=True)
+re-asks the verification heads with snapshot.screenshot(), the PNG the snapshot's
+elements were read from, before accepting completion.
 
 ### Bounds
 
@@ -270,6 +270,7 @@ class DesktopSnapshot:
     elements: tuple[DesktopElement, ...]
     context: Mapping[str, Any] = {}   # Backend metadata (pid, window_id, etc.)
     captured_at_ms: int | None = None
+    screenshot: Callable[[], bytes | None] | None = None  # PNG of the pixels observed, if captured
 ```
 
 Methods:
@@ -302,6 +303,7 @@ class Decision:
     drag_dy: float | None = None
     click_modifier: str | None = None  # CLICK only: MOD (toggle in selection) or SHIFT (extend range)
     confidence: float | None = None    # ChoicePolicy: weakest answer the decision uses
+    margin: float | None = None        # ChoicePolicy: smallest lead over the runner-up
     latency_ms: int | None = None
     raw: Mapping[str, Any] = {}  # Raw policy response for debugging
     reason: str | None = None   # Preserved in terminal execution results
@@ -424,10 +426,11 @@ class RuntimeConfig:
     timeout_s: float | None = None   # Wall-clock timeout (None = no limit)
     verify: VerifyFn | None = None   # Verification callback for SUBTASK_COMPLETE
     min_confidence: float | None = None  # Below this: NEEDS_AGENT instead of acting/completing
+    min_margin: float | None = None      # Lead over runner-up below this (near-tie): NEEDS_AGENT
 ```
 
-min_confidence gates action decisions and SUBTASK_COMPLETE. BLOCKED, NEEDS_AGENT
-and decisions without a confidence are not gated. The reason names the confidence,
+min_confidence and min_margin gate action decisions and SUBTASK_COMPLETE.
+BLOCKED, NEEDS_AGENT and decisions that don't report the value are not gated. The reason names the confidence,
 the operation and the threshold.
 
 ### VerifyFn
@@ -442,7 +445,7 @@ When set on RuntimeConfig, called before accepting SUBTASK_COMPLETE. If it retur
 
 1. Observe desktop
 2. Ask policy for a decision
-3. If the decision is an action or SUBTASK_COMPLETE below min_confidence: NEEDS_AGENT, return
+3. If the decision is an action or SUBTASK_COMPLETE below min_confidence or min_margin: NEEDS_AGENT, return
    If terminal: verify (if callback set), yield final event, return
 4. Materialize action (validate target exists, is legal, resolve input_key)
 5. Check freshness (target guard matches current state)
@@ -455,7 +458,7 @@ When set on RuntimeConfig, called before accepting SUBTASK_COMPLETE. If it retur
 Termination conditions:
 - Policy returns terminal decision (SUBTASK_COMPLETE, BLOCKED, NEEDS_AGENT)
 - Verification callback rejects completion -> NEEDS_AGENT
-- Decision confidence below min_confidence -> NEEDS_AGENT
+- Decision confidence below min_confidence, or margin below min_margin -> NEEDS_AGENT
 - Action budget exhausted -> NEEDS_AGENT
 - Wall-clock timeout -> NEEDS_AGENT
 - cancel() called -> NEEDS_AGENT
@@ -534,9 +537,10 @@ backend = MacOSHybridBackend()
 
 Combines MacOSAXBackend (semantic controls) and MacOSOCRProvider (Apple Vision OCR). Handles modal detection, OCR deduplication, and coordinate-based execution for OCR targets.
 
-`backend.capture_image()` returns a PNG of the frontmost window's on-screen area
-(sheets included), at most 1280 px on the longest side, or None when there is no
-window. Pass it as ChoicePolicy's `screenshot` for image completion checks.
+OCR text that an actionable AX element already represents (same text, centered
+inside it) is dropped, so one control has one id. Each snapshot's `screenshot()`
+returns the PNG of the window image OCR read, at most 1280 px on the longest side,
+for image completion checks.
 
 ### MacOSAXBackend
 
@@ -593,7 +597,7 @@ from arc_cua.policies import ChoicePolicy, TypeSafeTransport
 policy = ChoicePolicy(
     TypeSafeTransport(),
     max_candidates=240,
-    screenshot=None,  # e.g. backend.capture_image; needs transport.supports_images
+    screenshot_checks=False,  # needs transport.supports_images and snapshot.screenshot
 )
 ```
 
@@ -722,7 +726,7 @@ same questions, validation and runtime:
 ```python
 class MyTransport:
     name = "MyProvider"     # shown in invalid-response errors
-    supports_images = True  # optional; required for screenshot=
+    supports_images = True  # optional; required for screenshot_checks=True
 
     def ask(self, state, questions, *, images=()):
         # images: PNG bytes, only sent for screenshot completion checks
