@@ -125,7 +125,7 @@ Key design principles:
 - JEV can only pick targets and operations the current desktop actually exposes.
 - Literal values always come from the agent via Subtask.inputs.
 - One JEV call resolves operation + all operation-specific targets in parallel (speculative fan-out).
-- Post-action settling waits for the UI to react and go quiet (cheap visual probe on macOS), then observes once.
+- Post-action settling waits for the UI to react and go quiet (a cheap visual probe for MacOSHybridBackend, the app's accessibility notification count for MacOSAXBackend), then observes once.
 
 ---
 

@@ -126,6 +126,14 @@ clock in Calendar's week view, can be stale until the element is read again, whi
 is why the cache is opt-in. Actions are unaffected: `is_fresh` and `execute` read
 the target again.
 
+### Settling without screenshots
+
+`MacOSAXBackend.settle_probe()` returns the app's accessibility notification count
+(`AXEventMonitor`). It changes within milliseconds of the app reacting and stays
+still once the app is idle, so the runtime settles without screen captures or
+Screen Recording permission. When notifications are unavailable it returns None and
+the runtime compares observations instead.
+
 ---
 
 ## Local Apple Vision OCR

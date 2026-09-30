@@ -16,6 +16,7 @@ from ..models import ActionKind, Bounds, DesktopElement, DesktopSnapshot, Execut
 from .macos_app import MacOSApp
 from .macos_ax_cache import AXChangeFeed, AXNode, AXNodeCache
 from .macos_background import window_id
+from .macos_events import AXEventMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class MacOSAXBackend:
         self.app = MacOSApp(pid)
         # Opt-in: re-read only elements the app reports as changed. See macos_ax_cache.
         self._cache = AXNodeCache(AXChangeFeed(pid)) if cache else None
+        self._events: AXEventMonitor | None = None
 
     @property
     def pid(self) -> int:
@@ -71,6 +73,16 @@ class MacOSAXBackend:
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
+
+    def settle_probe(self) -> int | None:
+        """The app's accessibility notification count, for runtime settling.
+
+        It changes within milliseconds of the app reacting to input and stays still
+        once the app is idle, without capturing the screen. None when notifications
+        are unavailable; the runtime then settles by comparing observations."""
+        if self._events is None:
+            self._events = AXEventMonitor()
+        return self._events.count if self._events.watch(self.app.pid) else None
 
     def register_ref(self, element_id: str, ref: Any) -> None:
         self._refs[element_id] = ref

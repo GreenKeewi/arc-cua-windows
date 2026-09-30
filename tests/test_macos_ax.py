@@ -437,3 +437,18 @@ def test_cache_starts_over_when_the_window_moves(monkeypatch):
     reads.clear()
     cached_observe(backend, root, window=Bounds(500, 0, 100, 100))
     assert sorted(reads) == ["button", "window"]
+
+
+@pytest.mark.parametrize(("available", "expected"), [(True, 5), (False, None)])
+def test_settle_probe_is_the_apps_notification_count(monkeypatch, available, expected):
+    class Monitor:
+        count = 5
+
+        def watch(self, pid):
+            assert pid == 123
+            return available
+
+    monkeypatch.setattr(macos_ax, "AXEventMonitor", Monitor)
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.app, backend._events = fake_app(), None
+    assert backend.settle_probe() == expected
