@@ -523,7 +523,7 @@ app and exits. Standard input: one JSON object.
 | app | {"pid": int} or {"bundle_id": str} (required) |
 | subtask | Subtask JSON as for subtask_from_dict (required) |
 | provider | {"name": "jev", "api_key": str, "model": str (optional)} (required); api_key falls back to TYPESAFE_API_KEY |
-| backend | "hybrid" (default) or "ax" |
+| backend | "hybrid" (default; OCR only when accessibility exposes no app controls) or "ax" |
 | timeout_s, min_confidence, min_margin | RuntimeConfig fields |
 | dry_run | true: stop with DRY_RUN and planned_action instead of acting |
 
@@ -581,6 +581,14 @@ with MacOSHybridBackend(MacOSApp.from_bundle_id("com.apple.TextEdit").pid) as ba
 ```
 
 Combines MacOSAXBackend (semantic controls) and MacOSOCRProvider (Apple Vision OCR). Handles modal detection, OCR deduplication, and coordinate-based execution for OCR targets.
+
+`MacOSHybridBackend(pid, ocr="auto", capture_screenshots=False)`: with `ocr="auto"`
+(default) OCR runs only when the accessibility elements include no enabled,
+labelled application control (roles such as Button, CheckBox, PopUpButton, Link,
+MenuItem, Slider, text inputs; title-bar buttons excluded). Without OCR no
+screenshot is taken unless `capture_screenshots=True`, and settling uses the app's
+accessibility notification count. `"always"` / `"never"` force OCR on or off.
+`snapshot.context["perception_sources"]` is `["macos_ax"]` or `["macos_ax", "macos_ocr"]`.
 
 Both macOS backends act on one app, given by process ID, whether or not it is
 frontmost. Input is delivered in the background: events are addressed to the app's

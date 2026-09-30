@@ -82,6 +82,14 @@ class MacOSOCRProvider:
         self.max_elements = max_elements
         self.use_language_correction = use_language_correction
 
+    def capture(self, *, pid: int, preferred_window_title: str | None = None) -> tuple[MacOSWindow, Any]:
+        """The app's window and its captured image, without running OCR."""
+        Quartz, _, _, _ = _frameworks()
+        window = self.front_window(pid, preferred_title=preferred_window_title)
+        if window is None:
+            raise RuntimeError(f"Could not find an on-screen window for pid {pid}")
+        return window, _capture_window(Quartz, window.window_id)
+
     def observe(
         self,
         *,

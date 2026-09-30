@@ -208,7 +208,7 @@ Subtask(
 - **Accessibility (AX)** — semantic controls: buttons, fields, menus, roles, values, native actions
 - **Apple Vision OCR** — visible screen text with bounding boxes, for apps with incomplete accessibility
 
-Both normalize into `DesktopElement`s that JEV reasons over. JEV receives structured elements and IDs, not screenshots. Providers that accept images can also receive a window screenshot for completion checks; see [Terminal states](#terminal-states).
+Both normalize into `DesktopElement`s that JEV reasons over. `MacOSHybridBackend` runs OCR only when needed (`ocr="auto"`, the default): when accessibility exposes no enabled, labelled control of the app itself (title-bar buttons, the window and unlabelled groups do not count), as in Spotify, it adds OCR text; otherwise it takes no screenshot and settles on accessibility notifications. `ocr="always"` and `ocr="never"` force either path, and `snapshot.context["perception_sources"]` records which one ran. On a Clock alarm task, `auto` took 2.8–3.0 s against 3.6 s with `always`. JEV receives structured elements and IDs, not screenshots. Providers that accept images can also receive a window screenshot for completion checks; see [Terminal states](#terminal-states).
 
 The provider request stores element facts once in a shared table. Target choices
 refer to those observed IDs, and all questions share the same subtask. This reduces
@@ -225,8 +225,8 @@ observes in about 50 ms. Electron and other Chromium-based apps are asked for th
 full accessibility tree. `MacOSAXBackend(pid, cache=True)` also keeps elements
 between observations and re-reads only what the app reports as changed, so repeat
 observations take a few milliseconds; values an app changes without notifying can
-be briefly stale, which is why it is opt-in. Use `MacOSHybridBackend` for apps with
-little accessibility, where OCR supplies the visible text.
+be briefly stale, which is why it is opt-in. `MacOSHybridBackend` adds OCR
+automatically for apps with little accessibility.
 
 ### Background control on macOS
 
@@ -285,7 +285,7 @@ JSON object from standard input:
 | `app` | `{"pid": ...}`, or `{"bundle_id": "com.apple.TextEdit"}` for the first running instance (required) |
 | `subtask` | The subtask, with the fields in [JSON field types](#json-field-types) (required) |
 | `provider` | `name` (`"jev"`), `api_key`, and optionally `model` (required) |
-| `backend` | `"hybrid"` (AX + OCR, the default) or `"ax"` |
+| `backend` | `"hybrid"` (AX, with OCR when accessibility exposes no app controls; the default) or `"ax"` |
 | `timeout_s`, `min_confidence`, `min_margin` | As in `RuntimeConfig` |
 | `dry_run` | `true` to decide and validate the next action, then stop with `DRY_RUN` without acting |
 

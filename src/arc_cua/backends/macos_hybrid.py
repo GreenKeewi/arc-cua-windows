@@ -96,7 +96,17 @@ class MacOSHybridBackend:
         ocr_recognition_level: str = "fast",
         ocr_min_confidence: float = 0.45,
         ocr_max_elements: int = 160,
+        ocr: str = "auto",
+        capture_screenshots: bool = False,
     ) -> None:
+        """`ocr="auto"` reads the screen with OCR only when accessibility exposes no
+        application control; `"always"` and `"never"` force it on or off. Without OCR
+        no screenshot is taken unless `capture_screenshots` is set."""
+        if ocr not in OCR_MODES:
+            raise ValueError(f"ocr must be one of {sorted(OCR_MODES)}")
+        self.ocr_mode = ocr
+        self.capture_screenshots = capture_screenshots
+        self._used_ocr = True
 
         self.ax = MacOSAXBackend(
             pid,
@@ -177,21 +187,33 @@ class MacOSHybridBackend:
             else ax_snapshot.window
         )
 
-        ocr_capture = self.ocr.observe(
-            pid=pid,
-            app_name=ax_snapshot.application,
-            preferred_window_title=preferred_title,
+        use_ocr = self.ocr_mode == "always" or (
+            self.ocr_mode == "auto" and not has_application_controls(ax_elements)
         )
-
-        ocr_elements = _drop_ocr_seen_by_ax(
-            _dedupe_ocr(
-                ocr_capture.elements
-            ),
-            ax_elements,
-        )
+        self._used_ocr = use_ocr
+        ocr_capture = None
+        image = None
+        if use_ocr:
+            ocr_capture = self.ocr.observe(
+                pid=pid,
+                app_name=ax_snapshot.application,
+                preferred_window_title=preferred_title,
+            )
+            image = ocr_capture.image
+            ocr_elements = _drop_ocr_seen_by_ax(
+                _dedupe_ocr(
+                    ocr_capture.elements
+                ),
+                ax_elements,
+            )
+        else:
+            ocr_elements = ()
+            if self.capture_screenshots:
+                _, image = self.ocr.capture(pid=pid, preferred_window_title=preferred_title)
 
         if (
-            modal_active
+            use_ocr
+            and modal_active
             and modal_bounds is not None
         ):
             # If the modal is attached inside the parent window, OCR may still
@@ -258,14 +280,11 @@ class MacOSHybridBackend:
         context.update(
             {
                 "backend": "macos_hybrid",
-                "ocr_window_id": ocr_capture.window_id,
+                "ocr_window_id": ocr_capture.window_id if ocr_capture else None,
                 "ocr_window_bounds": _bounds_payload(
-                    ocr_capture.window_bounds
+                    ocr_capture.window_bounds if ocr_capture else None
                 ),
-                "perception_sources": [
-                    "macos_ax",
-                    "macos_ocr",
-                ],
+                "perception_sources": ["macos_ax", "macos_ocr"] if use_ocr else ["macos_ax"],
                 "modal_active": modal_active,
                 "modal_bounds": _bounds_payload(
                     modal_bounds
@@ -286,7 +305,7 @@ class MacOSHybridBackend:
         return DesktopSnapshot(
             application=ax_snapshot.application,
             window=(
-                ocr_capture.window_title
+                (ocr_capture.window_title if ocr_capture else None)
                 or ax_snapshot.window
             ),
             revision=revision,
@@ -296,15 +315,18 @@ class MacOSHybridBackend:
                 time.time() * 1000
             ),
             screenshot=(
-                partial(png_image, ocr_capture.image)
-                if ocr_capture.image is not None
+                partial(png_image, image)
+                if image is not None
                 else None
             ),
         )
 
 
-    def settle_probe(self) -> VisualProbe:
-        """Lightweight signal for post-action settling (no AX walk, no OCR)."""
+    def settle_probe(self) -> VisualProbe | int:
+        """Lightweight signal for post-action settling (no AX walk, no OCR).
+
+        When the last observation needed no OCR, the app's accessibility notification
+        count is enough and no screen is captured; otherwise a window thumbnail too."""
 
         pid = self.app.pid
         self.app.keep_behind()
@@ -313,6 +335,8 @@ class MacOSHybridBackend:
             if self._ax_events.watch(pid)
             else 0
         )
+        if not self._used_ocr:
+            return events
         windows = self.app.windows()
         if not windows:
             return VisualProbe(pid, None, None, b"", events)
@@ -535,6 +559,30 @@ class MacOSHybridBackend:
             f"and DRAG_TO; got "
             f"{action.kind.value}"
         )
+
+
+OCR_MODES = frozenset({"auto", "always", "never"})
+
+# Roles that make an application control; windows, groups and text are not enough.
+_CONTROL_ROLES = {
+    "Button", "CheckBox", "RadioButton", "PopUpButton", "MenuButton", "ComboBox", "Link", "MenuItem",
+    "Slider", "Incrementor", "DisclosureTriangle", "Tab", "TextField", "TextArea", "SearchField",
+    "SecureTextField",
+}
+_TEXT_INPUT_ROLES = {"TextField", "TextArea", "SearchField", "SecureTextField", "ComboBox"}
+
+
+def has_application_controls(elements: tuple[DesktopElement, ...]) -> bool:
+    """Whether accessibility exposes at least one usable control of the app itself:
+    an enabled, labelled control (text inputs need no label), not a title-bar button."""
+    return any(
+        element.role in _CONTROL_ROLES
+        and element.enabled
+        and element.actions
+        and "window_control" not in element.metadata
+        and (element.name.strip() or element.role in _TEXT_INPUT_ROLES)
+        for element in elements
+    )
 
 
 def _dedupe_ocr(

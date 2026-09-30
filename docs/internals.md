@@ -142,6 +142,18 @@ Some desktop applications expose little useful accessibility information.
 
 For those interfaces, `arc-cua` captures the target window locally and uses Apple Vision OCR to turn visible screen text into indexed elements.
 
+With `ocr="auto"`, the default, `MacOSHybridBackend` decides per observation, after
+reading accessibility (and isolating a modal, if any). OCR runs only when no element
+is an application control: a role such as Button, CheckBox, RadioButton, PopUpButton,
+ComboBox, Link, MenuItem, Slider or a text input, enabled, with an action, labelled
+(text inputs need no label), and not a title-bar button. Title-bar buttons are
+recognized by their `AXSubrole` (close, minimize, zoom, full screen), recorded as
+`metadata["window_control"]`. Spotify, for example, exposes only unlabelled groups
+and title-bar buttons, so it gets OCR; Clock, Finder and Calendar do not. Without
+OCR no screenshot is captured unless `capture_screenshots=True`, and
+`settle_probe()` returns the app's accessibility notification count instead of a
+window thumbnail.
+
 ```python
 DesktopElement(
     id="ocr_91ab...",

@@ -444,6 +444,9 @@ class MacOSAXBackend:
 
         if identifier:
             metadata["identifier"] = str(identifier)
+        subrole = get("AXSubrole")
+        if subrole is not None and str(subrole) in WINDOW_CONTROL_SUBROLES:
+            metadata["window_control"] = str(subrole).removeprefix("AX").removesuffix("Button").lower()
         url = get("AXURL")
         if url is not None:
             # File-reference URLs are opaque IDs; NSURL can resolve the path
@@ -547,8 +550,11 @@ def _intersect(clip: Bounds | None, bounds: Bounds | None) -> Bounds | None:
 
 _ELEMENT_ATTRIBUTES = (
     "AXRole", "AXTitle", "AXDescription", "AXLabel", "AXHelp", "AXValue", "AXEnabled", "AXFocused",
-    "AXSelected", "AXExpanded", "AXIdentifier", "AXURL", "AXPosition", "AXSize", "AXChildren",
+    "AXSelected", "AXExpanded", "AXIdentifier", "AXURL", "AXPosition", "AXSize", "AXChildren", "AXSubrole",
 )
+
+# Title-bar buttons: part of the window, not of the application's content.
+WINDOW_CONTROL_SUBROLES = {"AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton"}
 
 
 def copy_attributes(AS: Any, ref: Any, names: tuple[str, ...]) -> dict[str, Any] | None:
