@@ -56,6 +56,7 @@ class MacOSAXBackend:
         self.max_elements = max_elements
         self.max_depth = max_depth
         self._refs: dict[str, Any] = {}
+        self._row_states: dict[str, RowState] = {}
         self._identities = _AXIdentityRegistry()
         self._full_tree_supported = True
         self._require_accessibility()
@@ -138,6 +139,7 @@ class MacOSAXBackend:
         window_title = str(_attr(AS, root, "AXTitle") or app_name)
 
         refs: dict[str, Any] = {}
+        self._row_states = {}
         elements: list[DesktopElement] = []
         visited: set[str] = set()
         window_bounds = _ax_bounds(AS, root)
@@ -196,6 +198,8 @@ class MacOSAXBackend:
                 ref,
                 action.target_id,
                 parent_id=expected.parent_id,
+                # Read it as the walk did, inside the same row.
+                row=getattr(self, "_row_states", {}).get(action.target_id),
             )
 
             if current is None or current.semantic_guard() != action.target_guard:
@@ -347,6 +351,8 @@ class MacOSAXBackend:
         if element is not None:
             elements.append(element)
             refs[element.id] = ref
+            if row is not None:
+                self._row_states[element.id] = row
             next_parent = element.id
 
         child_row = row

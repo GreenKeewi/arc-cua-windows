@@ -391,6 +391,27 @@ def test_text_in_a_row_is_clickable_and_shows_the_row_selection(monkeypatch, row
     assert element.selected is selected
 
 
+def test_an_element_inside_a_selected_row_stays_fresh(monkeypatch):
+    api = SimpleNamespace(AXUIElementIsAttributeSettable=lambda ref, name, _: (0, False),
+                          AXUIElementCopyActionNames=lambda ref, _: (0, ["AXShowMenu"]))
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
+    monkeypatch.setattr(macos_ax, "_bounds_from_values", lambda *args: Bounds(0, 0, 80, 20))
+    attributes = {name: None for name in macos_ax._ELEMENT_ATTRIBUTES}
+    attributes |= {"AXRole": "AXStaticText", "AXValue": "General"}
+    monkeypatch.setattr(macos_ax, "copy_attributes", lambda api, ref, names: dict(attributes))
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    backend.app = fake_app()
+    row = macos_ax.RowState(selected=True)
+    walked = backend._element_from_ref(Ref("text"), "ax_1", parent_id=None, attributes=attributes, row=row)
+    backend._refs, backend._row_states = {"ax_1": Ref("text")}, {"ax_1": row}
+    snapshot = DesktopSnapshot(application="Settings", window="General", revision="1", elements=(walked,),
+                               context={"pid": 123})
+    action = ExecutableAction(kind=ActionKind.CLICK, target_id="ax_1", target_guard=walked.semantic_guard())
+    assert walked.selected is True
+    assert backend.is_fresh(snapshot, action)
+
+
 def test_full_tree_request_stops_for_apps_that_do_not_support_it():
     calls = []
 
