@@ -27,10 +27,10 @@ SOURCE = "chrome_dom"
 DIALOG_ACCEPT = "dialog_accept"
 DIALOG_DISMISS = "dialog_dismiss"
 
-# Requests whose responses usually change the page. Settling waits for them, but
-# not for one older than _REQUEST_WAIT_S (long polling, streams).
+# Requests whose responses usually change the page. Settling after an action waits
+# for those the action started; ones already open before it (long polling,
+# streams) do not hold it up.
 _TRACKED_REQUESTS = frozenset({"Document", "XHR", "Fetch"})
-_REQUEST_WAIT_S = 3.0
 
 # DevTools modifier bits.
 _ALT, _CTRL, _META, _SHIFT = 1, 2, 4, 8
@@ -94,7 +94,7 @@ class ChromeBackend:
 
     # Settling after an action may take this long while the page is still fetching
     # (see settle_probe); the runtime's own cap applies when it is longer.
-    settle_timeout_s = 6.0
+    settle_timeout_s = 10.0
 
     def __init__(
         self,
@@ -371,6 +371,7 @@ class ChromeBackend:
 
     def execute(self, snapshot: DesktopSnapshot, action: ExecutableAction) -> None:
         self._conn.drain()
+        self._action_started = time.monotonic()
         if action.target_id in (DIALOG_ACCEPT, DIALOG_DISMISS):
             if self._dialog is None:
                 raise StaleDesktopState("The JavaScript dialog is no longer open")
@@ -421,7 +422,8 @@ class ChromeBackend:
             if self._dialog is not None:
                 return ("dialog", self._dialog.get("message"))
             now = time.monotonic()
-            if any(now - started < _REQUEST_WAIT_S for started in self._requests.values()):
+            since = getattr(self, "_action_started", now)
+            if any(started >= since for started in self._requests.values()):
                 # Content the page is still fetching has not arrived: never quiet.
                 return ("loading", now)
             return (*self._page("probe", timeout_s=2), self._opened_tab)

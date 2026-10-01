@@ -31,8 +31,8 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path == "/slow":
-            time.sleep(1.0)
+        if self.path in ("/slow", "/slower", "/hang"):
+            time.sleep({"/slow": 1.0, "/slower": 4.0, "/hang": 30.0}[self.path])
             body = b"Results loaded"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
@@ -173,6 +173,20 @@ def test_typing_follows_the_caret_into_a_popup_input(page):
     snapshot = page.observe()
     assert named(snapshot, "Search airports").value == "JFK"
     assert named(snapshot, "Airport").value == ""
+
+
+def test_settling_waits_for_a_slow_request_the_action_started(page):
+    page.navigate(page.observe().context["url"].replace("index.html", "index.html?slower"))
+    result = run(page, [(ActionKind.CLICK, "Load results", {})])
+    assert any(e.name == "Results loaded" for e in result.final_snapshot.elements)
+
+
+def test_a_request_open_before_the_action_does_not_hold_up_settling(page):
+    page._call("Runtime.evaluate", {"expression": "fetch('/hang')"})  # noqa: SLF001
+    time.sleep(0.3)
+    started = time.monotonic()
+    run(page, [(ActionKind.CLICK, "Weekend deals", {})])
+    assert time.monotonic() - started < 3
 
 
 def test_covered_elements_are_not_offered_until_uncovered(page):

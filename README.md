@@ -344,9 +344,10 @@ with ChromeBackend.launch("https://en.wikipedia.org") as backend:
 - **Custom widgets** without semantics are found by their pointer cursor. A wrapper
   around a real control, such as a styled radio button, is not listed separately;
   the control inside it is.
-- **Settling** waits for the page's document, XHR and fetch requests to finish
-  (ignoring any open longer than 3 s) as well as for the DOM to go quiet, so results
-  loaded after a click are observed.
+- **Settling** waits for the document, XHR and fetch requests an action started to
+  finish, as well as for the DOM to go quiet, so results loaded after a click are
+  observed. Requests already open before the action (long polling, streams) do not
+  hold it up.
 - **Native dropdowns, sliders and date inputs** use `SET_VALUE` with an
   agent-supplied input. A `<select>` lists its options in `metadata["options"]`.
 - **Status messages** in live regions (`role=status`, `role=alert`, `aria-live`)
@@ -368,7 +369,7 @@ extensions) are not reachable.
 
 After a mutating action, `arc-cua` waits until the desktop has reacted and gone quiet, then observes it once. The decision model decides **what to do**; the runtime decides **when the UI is ready to reason over again**.
 
-The hybrid macOS backend settles on a cheap visual probe: the target app's front window plus a small grayscale thumbnail of the app's own windows in that area (sheets and panels included; other apps' windows covering it are not). The runtime waits up to `settle_reaction_s` (0.6 s; covers an app still busy with the previous action) for a visible reaction, then until the probe has been unchanged for `settle_quiet_s` (0.15 s), capped at `settle_timeout_s` (2 s). A caret-sized change does not count as activity. Full AX + OCR observations are not used for settling because OCR output varies slightly between passes even when the UI is identical. The accessibility-only `MacOSAXBackend` settles on the app's accessibility notification count instead, which needs no screen capture or Screen Recording permission; on a Clock alarm task this cut the time spent waiting from about 1.3 s to 0.75 s. `ChromeBackend` also waits for the page's in-flight requests, and raises the cap to 6 s while they last (a backend's `settle_timeout_s` can raise the configured cap, never lower it). Backends without a `settle_probe()` method keep snapshot-based settling.
+The hybrid macOS backend settles on a cheap visual probe: the target app's front window plus a small grayscale thumbnail of the app's own windows in that area (sheets and panels included; other apps' windows covering it are not). The runtime waits up to `settle_reaction_s` (0.6 s; covers an app still busy with the previous action) for a visible reaction, then until the probe has been unchanged for `settle_quiet_s` (0.15 s), capped at `settle_timeout_s` (2 s). A caret-sized change does not count as activity. Full AX + OCR observations are not used for settling because OCR output varies slightly between passes even when the UI is identical. The accessibility-only `MacOSAXBackend` settles on the app's accessibility notification count instead, which needs no screen capture or Screen Recording permission; on a Clock alarm task this cut the time spent waiting from about 1.3 s to 0.75 s. `ChromeBackend` also waits for the requests an action started, and raises the cap to 10 s while they last (Google Flights' booking page fetches its prices in one request that took 3–7 s) (a backend's `settle_timeout_s` can raise the configured cap, never lower it). Backends without a `settle_probe()` method keep snapshot-based settling.
 
 Some apps react, pause while they work, then show the result: Finder's New Folder with Selection redraws within 0.06 s, posts nothing for about 0.8 s while it moves the files, then shows the new folder. Settling ends in the pause. So when the policy answers `NEEDS_AGENT` or `BLOCKED` right after an action, the runtime waits `late_reaction_s` (1 s), observes again and, if the desktop changed, asks the policy again. This happens once per action and costs nothing on the normal path.
 
