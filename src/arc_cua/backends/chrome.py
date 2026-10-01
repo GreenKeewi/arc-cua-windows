@@ -388,7 +388,10 @@ class ChromeBackend:
             x, y = self._point(action.target_id)
             self._click(x, y)
             if self._dialog is None:
-                self._page("selectContents", {"id": action.target_id})
+                # A field that opens a popup on click (a search or airport picker) can move
+                # the caret into the popup's own input; the text goes where the caret is.
+                target = self._page("activeEditable").get("id") or action.target_id
+                self._page("selectContents", {"id": target})
                 self._call("Input.insertText", {"text": str(action.value)}, until=_is_dialog_event)
         elif kind == ActionKind.SET_VALUE:
             result = self._page("setValue", {"id": action.target_id, "value": action.value})

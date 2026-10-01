@@ -490,6 +490,25 @@
     ];
   };
 
-  const methods = { observe, describe, point, selectContents, setValue, probe };
+  // The text field holding the caret, through open shadow roots and same-origin frames.
+  const activeEditable = () => {
+    let el = document.activeElement;
+    for (;;) {
+      if (el && el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      if (el && (el.localName === "iframe" || el.localName === "frame")) {
+        let inner = null;
+        try { inner = el.contentDocument; } catch (e) { inner = null; }
+        if (inner && inner.activeElement) { el = inner.activeElement; continue; }
+      }
+      break;
+    }
+    if (!el) return {};
+    const type = el.localName === "input" ? (el.getAttribute("type") || "").toLowerCase() : "";
+    const editable = (el.localName === "input" && TEXT_INPUT_TYPES.has(type) && !el.readOnly)
+      || (el.localName === "textarea" && !el.readOnly) || el.isContentEditable;
+    return editable ? { id: idOf(el) } : {};
+  };
+
+  const methods = { observe, describe, point, selectContents, setValue, probe, activeEditable };
   return methods[method](args || {});
 }

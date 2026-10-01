@@ -168,6 +168,13 @@ def test_settling_waits_for_content_the_page_is_fetching(page):
     assert any(e.name == "Results loaded" for e in result.final_snapshot.elements)
 
 
+def test_typing_follows_the_caret_into_a_popup_input(page):
+    run(page, [(ActionKind.TYPE_TEXT, "Airport", {"input_key": "code"})], code="JFK")
+    snapshot = page.observe()
+    assert named(snapshot, "Search airports").value == "JFK"
+    assert named(snapshot, "Airport").value == ""
+
+
 def test_covered_elements_are_not_offered_until_uncovered(page):
     run(page, [(ActionKind.SCROLL, None, {"scroll_direction": "DOWN"})] * 3)
     bottom = named(page.observe(), "Bottom button")

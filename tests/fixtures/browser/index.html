@@ -34,6 +34,8 @@
 <a href="details.html" target="_blank">Travel details</a>
 
 <div class="card" id="card" onclick="result.textContent='Card opened'">Weekend deals</div>
+<label>Airport <input id="airport" onclick="picker.hidden = false; pickerInput.focus()"></label>
+<div id="picker" hidden><label>Search airports <input id="pickerInput"></label></div>
 <button onclick="fetch('/slow').then(r => r.text()).then(t => { loaded.textContent = t; })">Load results</button>
 <p id="loaded"></p>
 <div role="radiogroup" aria-label="Stops">
