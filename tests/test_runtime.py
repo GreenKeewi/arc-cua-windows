@@ -487,3 +487,47 @@ def test_dry_run_reports_the_next_action_without_acting() -> None:
     assert result.status == TerminalKind.DRY_RUN
     assert result.actions_taken == 0 and backend.state["value"] == ""
     assert result.planned_action == {"action": "TYPE_TEXT", "target": "search", "target_name": "Search", "value": "x"}
+
+
+def _late_backend(delay_s: float) -> StateMachineBackend:
+    """A click whose result shows only after `delay_s`, like an app working before it redraws."""
+
+    def snapshot(state: dict) -> DesktopSnapshot:
+        shown = state["clicked_at"] is not None and time.monotonic() - state["clicked_at"] >= delay_s
+        elements = [DesktopElement(id="btn", role="button", name="Move", actions=(ActionKind.CLICK,))]
+        if shown:
+            elements.append(DesktopElement(id="folder", role="text", name="Invoices"))
+        return DesktopSnapshot(application="Files", window="Inbox", revision=str(shown), elements=tuple(elements))
+
+    def transition(state: dict, action) -> None:
+        state["clicked_at"] = time.monotonic()
+
+    backend = StateMachineBackend({"clicked_at": None}, snapshot, transition)
+    # The app posts nothing while it works, so probe-based settling ends before the result shows.
+    backend.settle_probe = lambda: 0  # type: ignore[attr-defined]
+    return backend
+
+
+def test_give_up_right_after_an_action_looks_again_and_decides_on_a_late_change() -> None:
+    policy = ScriptedPolicy([
+        Decision(kind=ActionKind.CLICK, target_id="btn"),
+        Decision(terminal=TerminalKind.NEEDS_AGENT),
+        Decision(terminal=TerminalKind.SUBTASK_COMPLETE),
+    ])
+    config = RuntimeConfig(late_reaction_s=0.3, settle_reaction_s=0.05)
+    result = DesktopExecutor(_late_backend(0.2), policy, config=config).run(
+        Subtask(goal="Move", verification=("Invoices is listed",)))
+    assert result.status == TerminalKind.SUBTASK_COMPLETE
+    assert any(e.name == "Invoices" for e in result.final_snapshot.elements)
+
+
+def test_give_up_stands_when_nothing_changes_on_the_second_look() -> None:
+    policy = ScriptedPolicy([
+        Decision(kind=ActionKind.CLICK, target_id="btn"),
+        Decision(terminal=TerminalKind.NEEDS_AGENT),
+        Decision(terminal=TerminalKind.SUBTASK_COMPLETE),
+    ])
+    config = RuntimeConfig(late_reaction_s=0.05, settle_reaction_s=0.05)
+    result = DesktopExecutor(_late_backend(10), policy, config=config).run(
+        Subtask(goal="Move", verification=("Invoices is listed",)))
+    assert result.status == TerminalKind.NEEDS_AGENT

@@ -40,6 +40,10 @@ class RuntimeConfig:
     settle_quiet_s: float = 0.15
     settle_timeout_s: float = 2.0
     settle_poll_s: float = 0.02
+    # An app can react, pause while it works, then show the result (a file operation).
+    # Before accepting NEEDS_AGENT or BLOCKED right after an action, wait this long and
+    # observe again; when the desktop changed, decide again. 0 disables it.
+    late_reaction_s: float = 1.0
     timeout_s: float | None = None
     verify: VerifyFn | None = None
     # Return NEEDS_AGENT instead of acting (or completing) when a decision's
@@ -261,6 +265,7 @@ class DesktopExecutor:
         snapshot = self.backend.observe()
         stale_retries = 0
         step = 0
+        rechecked = False  # the desktop was looked at again since the last action
         logger.debug("run_iter start goal=%r max_actions=%d", subtask.goal, subtask.max_actions)
 
         while len(history) < subtask.max_actions:
@@ -303,6 +308,20 @@ class DesktopExecutor:
                 logger.debug("gated step=%d: %s", step, gate_reason)
                 yield StepEvent(step=step, snapshot=snapshot, decision=decision, result=result)
                 return result
+
+            if (
+                decision.terminal in (TerminalKind.NEEDS_AGENT, TerminalKind.BLOCKED)
+                and history
+                and not rechecked
+                and self.config.late_reaction_s > 0
+            ):
+                rechecked = True
+                time.sleep(self.config.late_reaction_s)
+                later = self.backend.observe()
+                if _structural_signature(later) != _structural_signature(snapshot):
+                    logger.debug("late reaction step=%d: deciding again", step)
+                    snapshot = later
+                    continue
 
             if decision.terminal is not None:
                 is_complete = decision.terminal == TerminalKind.SUBTASK_COMPLETE
@@ -421,6 +440,7 @@ class DesktopExecutor:
                 target=target,
             )
             history.append(record)
+            rechecked = False
 
             yield StepEvent(step=step, snapshot=snapshot, decision=decision, action=action, record=record)
 

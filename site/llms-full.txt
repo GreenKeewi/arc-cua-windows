@@ -439,6 +439,7 @@ class RuntimeConfig:
     settle_quiet_s: float = 0.15     # Required unchanged time after a reaction
     settle_timeout_s: float = 2.0    # Upper bound on probe-based settling
     settle_poll_s: float = 0.02
+    late_reaction_s: float = 1.0     # Before accepting NEEDS_AGENT/BLOCKED right after an action, look again after this long; decide again if the desktop changed (0 disables)
     timeout_s: float | None = None   # Wall-clock timeout (None = no limit)
     verify: VerifyFn | None = None   # Verification callback for SUBTASK_COMPLETE
     min_confidence: float | None = None  # Below this: NEEDS_AGENT instead of acting/completing
