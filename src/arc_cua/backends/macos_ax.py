@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 _WINDOW_WAIT_S = 1.0
 _TEXT_ROLES = {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
 _ROW_ROLES = {"AXRow", "AXCell"}
+# Containers some apps (Chromium-based ones) report a settable value for; setting it does nothing.
+_CONTAINER_ROLES = {"AXGroup", "AXScrollArea", "AXSplitGroup", "AXWindow", "AXWebArea"}
 
 
 @dataclass(frozen=True)
@@ -468,7 +470,7 @@ class MacOSAXBackend:
             capabilities.append(ActionKind.TYPE_TEXT)
 
         # Capability comes from AX itself, not a hard-coded role allowlist.
-        if settable and (role not in _TEXT_ROLES or text_editor):
+        if settable and (role not in _TEXT_ROLES or text_editor) and role not in _CONTAINER_ROLES:
             capabilities.append(ActionKind.SET_VALUE)
 
         # Ignore anonymous containers with no useful action/state. Their children are

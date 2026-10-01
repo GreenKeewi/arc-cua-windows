@@ -544,3 +544,17 @@ def test_settle_probe_is_the_apps_notification_count(monkeypatch, available, exp
     backend = object.__new__(macos_ax.MacOSAXBackend)
     backend.app, backend._events = fake_app(), None
     assert backend.settle_probe() == expected
+
+
+@pytest.mark.parametrize(("role", "offered"), [("AXGroup", False), ("AXScrollArea", False), ("AXSlider", True)])
+def test_containers_are_not_offered_set_value(monkeypatch, role, offered):
+    api = SimpleNamespace(AXUIElementIsAttributeSettable=lambda ref, name, _: (0, True),
+                          AXUIElementCopyActionNames=lambda ref, _: (0, []))
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
+    monkeypatch.setattr(macos_ax, "_bounds_from_values", lambda *args: Bounds(0, 0, 80, 20))
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    attributes = {name: None for name in macos_ax._ELEMENT_ATTRIBUTES} | {"AXRole": role, "AXValue": ""}
+    element = backend._element_from_ref(Ref("x"), "ax_1", parent_id=None, attributes=attributes)
+    actions = element.actions if element is not None else ()
+    assert (ActionKind.SET_VALUE in actions) is offered
