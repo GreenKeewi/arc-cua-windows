@@ -104,6 +104,9 @@ class DesktopExecutor:
     def _wait_for_quiet(self, before_probe: Any) -> Any:
         """Poll the probe until the UI reacted and went quiet; return the last probe."""
         config = self.config
+        # A backend whose content arrives over the network (web pages) can need longer
+        # than native UI; it may raise, never lower, the configured cap.
+        timeout_s = max(config.settle_timeout_s, getattr(self.backend, "settle_timeout_s", 0.0) or 0.0)
         started = time.perf_counter()
         previous = before_probe
         changed = False
@@ -119,7 +122,7 @@ class DesktopExecutor:
                 quiet_since = now
             previous = current
             elapsed = now - started
-            if elapsed >= config.settle_timeout_s:
+            if elapsed >= timeout_s:
                 break
             if changed and now - quiet_since >= config.settle_quiet_s:
                 break

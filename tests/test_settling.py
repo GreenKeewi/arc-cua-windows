@@ -127,3 +127,22 @@ def test_visual_probe_tolerates_caret_sized_changes() -> None:
     assert probe(base) == probe(caret)
     assert probe(base) != probe(moved)
     assert probe(base) != probe(base, window_id=2)
+
+
+def test_backend_can_raise_but_not_lower_the_settle_timeout() -> None:
+    import itertools
+    import time
+
+    from arc_cua import RuntimeConfig
+    from arc_cua.runtime import DesktopExecutor
+
+    for backend_timeout, expected in ((0.3, 0.3), (0.01, 0.1)):
+        counter = itertools.count()
+        backend = _ProbeBackend([0])
+        backend.settle_probe = lambda: next(counter)  # type: ignore[method-assign]
+        backend.settle_timeout_s = backend_timeout  # type: ignore[attr-defined]
+        config = RuntimeConfig(settle_poll_s=0.001, settle_timeout_s=0.1)
+        executor = DesktopExecutor(backend, policy=None, config=config)
+        started = time.perf_counter()
+        executor._settle_with_probe(executor._probe())
+        assert expected <= time.perf_counter() - started < expected + 0.2

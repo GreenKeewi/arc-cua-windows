@@ -92,6 +92,10 @@ class ChromeBackend:
     SCROLL reveals more. Links that open a new tab switch the backend to it.
     """
 
+    # Settling after an action may take this long while the page is still fetching
+    # (see settle_probe); the runtime's own cap applies when it is longer.
+    settle_timeout_s = 6.0
+
     def __init__(
         self,
         connection: CDPConnection,
