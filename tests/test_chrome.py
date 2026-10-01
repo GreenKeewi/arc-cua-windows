@@ -6,6 +6,7 @@ import functools
 import http.server
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,18 @@ FIXTURES = Path(__file__).parent / "fixtures" / "browser"
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
+
+    def do_GET(self):
+        if self.path == "/slow":
+            time.sleep(1.0)
+            body = b"Results loaded"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
 
 
 @pytest.fixture(scope="module")
@@ -133,6 +146,26 @@ def test_shadow_dom_iframe_and_pointer_widgets_are_clickable(page):
                            ("Weekend deals", "Card opened")]:
         run(page, [(ActionKind.CLICK, name, {})])
         assert status(page) == expected
+
+
+def test_pointer_wrapper_around_a_control_is_not_a_second_target(page):
+    snapshot = page.observe()
+    assert named(snapshot, "Nonstop only").role == "radio"
+    assert not [e for e in snapshot.elements if e.role == "clickable" and not e.name]
+
+
+def test_checked_radio_offers_no_click(page):
+    snapshot = page.observe()
+    assert named(snapshot, "Any number of stops").actions == ()
+    run(page, [(ActionKind.CLICK, "Nonstop only", {})])
+    snapshot = page.observe()
+    assert named(snapshot, "Nonstop only").actions == ()
+    assert named(snapshot, "Any number of stops").actions == (ActionKind.CLICK,)
+
+
+def test_settling_waits_for_content_the_page_is_fetching(page):
+    result = run(page, [(ActionKind.CLICK, "Load results", {})])
+    assert any(e.name == "Results loaded" for e in result.final_snapshot.elements)
 
 
 def test_covered_elements_are_not_offered_until_uncovered(page):

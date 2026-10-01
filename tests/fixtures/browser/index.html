@@ -34,6 +34,12 @@
 <a href="details.html" target="_blank">Travel details</a>
 
 <div class="card" id="card" onclick="result.textContent='Card opened'">Weekend deals</div>
+<button onclick="fetch('/slow').then(r => r.text()).then(t => { loaded.textContent = t; })">Load results</button>
+<p id="loaded"></p>
+<div role="radiogroup" aria-label="Stops">
+  <div><span class="ripple" style="cursor: pointer"><input type="radio" name="stops" id="stops-any" checked style="cursor: pointer"><span></span></span><label for="stops-any">Any number of stops</label></div>
+  <div><span class="ripple" style="cursor: pointer"><input type="radio" name="stops" id="stops-none" style="cursor: pointer"><span></span></span><label for="stops-none">Nonstop only</label></div>
+</div>
 <fancy-button></fancy-button>
 <iframe src="frame.html" width="300" height="80"></iframe>
 

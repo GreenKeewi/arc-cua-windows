@@ -246,6 +246,9 @@
       return el.readOnly ? ["CLICK"] : ["CLICK", "TYPE_TEXT"];
     }
     if (TYPE_ROLES.has(role) && el.isContentEditable) return ["CLICK", "TYPE_TEXT"];
+    // Clicking a radio button that is already checked changes nothing.
+    if (tag === "input" && type === "radio" && el.checked) return [];
+    if (role === "radio" && el.getAttribute("aria-checked") === "true") return [];
     const actions = ["CLICK"];
     if (el.hasAttribute("ondblclick")) actions.push("DOUBLE_CLICK");
     return actions;
@@ -267,10 +270,16 @@
   const CONTAINERS = new Set(["div", "section", "main", "article", "aside", "nav", "ul", "ol", "table", "body", "html"]);
 
   // Custom widgets without semantics: the outermost element showing a pointer cursor.
+  // A wrapper around a real control (a styled radio or checkbox) is not a second
+  // target; the control inside it is.
   const isPointerWidget = (el) => {
     if (getComputedStyle(el).cursor !== "pointer") return false;
     const parent = el.parentElement;
-    return !parent || getComputedStyle(parent).cursor !== "pointer";
+    if (parent && getComputedStyle(parent).cursor === "pointer") return false;
+    for (const inner of el.querySelectorAll("*")) {
+      if (isInteractive(inner, roleOf(inner))) return false;
+    }
+    return true;
   };
 
   const INLINE = new Set([

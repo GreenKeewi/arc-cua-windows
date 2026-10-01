@@ -27,6 +27,11 @@ SOURCE = "chrome_dom"
 DIALOG_ACCEPT = "dialog_accept"
 DIALOG_DISMISS = "dialog_dismiss"
 
+# Requests whose responses usually change the page. Settling waits for them, but
+# not for one older than _REQUEST_WAIT_S (long polling, streams).
+_TRACKED_REQUESTS = frozenset({"Document", "XHR", "Fetch"})
+_REQUEST_WAIT_S = 3.0
+
 # DevTools modifier bits.
 _ALT, _CTRL, _META, _SHIFT = 1, 2, 4, 8
 
@@ -167,7 +172,9 @@ class ChromeBackend:
             "Target.attachToTarget", {"targetId": target_id, "flatten": True},
         )["sessionId"]
         self._dialog = None
+        self._requests: dict[str, float] = {}
         self._call("Page.enable")
+        self._call("Network.enable")
         # Let the page behave as focused while the window is in the background.
         self._call("Emulation.setFocusEmulationEnabled", {"enabled": True})
         platform = self._call("Runtime.evaluate", {
@@ -223,6 +230,11 @@ class ChromeBackend:
                 self._dialog = params
             elif method == "Page.javascriptDialogClosed":
                 self._dialog = None
+            elif method == "Network.requestWillBeSent":
+                if params.get("type") in _TRACKED_REQUESTS:
+                    self._requests[params["requestId"]] = time.monotonic()
+            elif method in ("Network.loadingFinished", "Network.loadingFailed"):
+                self._requests.pop(params.get("requestId"), None)
 
     def _call(self, method: str, params: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
         return self._conn.call(method, params, session_id=self.session_id, **kwargs)
@@ -396,6 +408,10 @@ class ChromeBackend:
             self._conn.drain()
             if self._dialog is not None:
                 return ("dialog", self._dialog.get("message"))
+            now = time.monotonic()
+            if any(now - started < _REQUEST_WAIT_S for started in self._requests.values()):
+                # Content the page is still fetching has not arrived: never quiet.
+                return ("loading", now)
             return (*self._page("probe", timeout_s=2), self._opened_tab)
         except (CDPError, StaleDesktopState):
             return ("unavailable",)

@@ -339,7 +339,14 @@ with ChromeBackend.launch("https://en.wikipedia.org") as backend:
   accessible names, values and states. Open shadow roots and same-origin iframes
   are included. `SCROLL` reveals more; `context["more_below"]` says whether there is more.
 - **Covered controls**, such as a button behind a cookie banner, are listed without
-  actions until they can actually receive a click.
+  actions until they can actually receive a click. A radio button that is already
+  checked offers no click either, since clicking it changes nothing.
+- **Custom widgets** without semantics are found by their pointer cursor. A wrapper
+  around a real control, such as a styled radio button, is not listed separately;
+  the control inside it is.
+- **Settling** waits for the page's document, XHR and fetch requests to finish
+  (ignoring any open longer than 3 s) as well as for the DOM to go quiet, so results
+  loaded after a click are observed.
 - **Native dropdowns, sliders and date inputs** use `SET_VALUE` with an
   agent-supplied input. A `<select>` lists its options in `metadata["options"]`.
 - **Status messages** in live regions (`role=status`, `role=alert`, `aria-live`)
@@ -361,7 +368,7 @@ extensions) are not reachable.
 
 After a mutating action, `arc-cua` waits until the desktop has reacted and gone quiet, then observes it once. The decision model decides **what to do**; the runtime decides **when the UI is ready to reason over again**.
 
-The hybrid macOS backend settles on a cheap visual probe: the target app's front window plus a small grayscale thumbnail of the app's own windows in that area (sheets and panels included; other apps' windows covering it are not). The runtime waits up to `settle_reaction_s` (0.6 s; covers an app still busy with the previous action) for a visible reaction, then until the probe has been unchanged for `settle_quiet_s` (0.15 s), capped at `settle_timeout_s` (2 s). A caret-sized change does not count as activity. Full AX + OCR observations are not used for settling because OCR output varies slightly between passes even when the UI is identical. The accessibility-only `MacOSAXBackend` settles on the app's accessibility notification count instead, which needs no screen capture or Screen Recording permission; on a Clock alarm task this cut the time spent waiting from about 1.3 s to 0.75 s. Backends without a `settle_probe()` method keep snapshot-based settling.
+The hybrid macOS backend settles on a cheap visual probe: the target app's front window plus a small grayscale thumbnail of the app's own windows in that area (sheets and panels included; other apps' windows covering it are not). The runtime waits up to `settle_reaction_s` (0.6 s; covers an app still busy with the previous action) for a visible reaction, then until the probe has been unchanged for `settle_quiet_s` (0.15 s), capped at `settle_timeout_s` (2 s). A caret-sized change does not count as activity. Full AX + OCR observations are not used for settling because OCR output varies slightly between passes even when the UI is identical. The accessibility-only `MacOSAXBackend` settles on the app's accessibility notification count instead, which needs no screen capture or Screen Recording permission; on a Clock alarm task this cut the time spent waiting from about 1.3 s to 0.75 s. `ChromeBackend` also waits for the page's in-flight requests. Backends without a `settle_probe()` method keep snapshot-based settling.
 
 `TYPE_TEXT` can press `ENTER` or `TAB` right after entering its value (`Decision.key`), so a path, search or name field can be filled and submitted in one decision. The runtime waits for the typed value to settle before pressing the key, and the history records the key with the `TYPE_TEXT` action.
 
