@@ -108,6 +108,10 @@ class MyTransport:
 policy = ChoicePolicy(MyTransport())
 ```
 
+An answer that fails validation, such as a choice outside the offered options,
+executes nothing. `ChoicePolicy` asks the same questions again (`invalid_retries`,
+default 1), then raises `InvalidChoiceResponse` naming the question.
+
 See [the extension guide](site/llms-full.txt) for the request and answer shapes.
 
 ### The agent owns intent

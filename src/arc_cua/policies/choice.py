@@ -125,6 +125,10 @@ class ChoiceTransport(Protocol):
         ...
 
 
+class InvalidChoiceResponse(ValueError):
+    """The provider's answer failed validation; no action was executed."""
+
+
 class ChoicePolicy:
     """Dynamic operation/target decision policy, modeled after jev-ultrafast's heads.
 
@@ -139,6 +143,7 @@ class ChoicePolicy:
         max_candidates: int = 240,
         screenshot_checks: bool = False,
         screenshot_steps: bool = False,
+        invalid_retries: int = 1,
     ) -> None:
         if (screenshot_checks or screenshot_steps) and not getattr(transport, "supports_images", False):
             raise ValueError(f"{transport.name} does not accept images; remove the screenshot options")
@@ -146,8 +151,25 @@ class ChoicePolicy:
         self.max_candidates = max_candidates
         self.screenshot_checks = screenshot_checks
         self.screenshot_steps = screenshot_steps
+        # An answer that fails validation executes nothing, so the same question is asked again.
+        self.invalid_retries = invalid_retries
 
     def decide(
+        self,
+        *,
+        subtask: Subtask,
+        snapshot: DesktopSnapshot,
+        history: Sequence[ActionRecord],
+    ) -> Decision:
+        for attempt in range(self.invalid_retries + 1):
+            try:
+                return self._decide_once(subtask=subtask, snapshot=snapshot, history=history)
+            except InvalidChoiceResponse:
+                if attempt == self.invalid_retries:
+                    raise
+        raise AssertionError("unreachable")
+
+    def _decide_once(
         self,
         *,
         subtask: Subtask,
@@ -184,7 +206,10 @@ class ChoicePolicy:
         margins: list[float] = []
 
         def pick(name: str, ids: Mapping[str, Any] | set[str]) -> Mapping[str, Any]:
-            answer = self._validate_choice(answers.get(name, {}), set(ids))
+            try:
+                answer = self._validate_choice(answers.get(name, {}), set(ids))
+            except InvalidChoiceResponse as exc:
+                raise InvalidChoiceResponse(f"{exc} (question: {name})") from None
             used.append(float(answer["confidence"]))
             if "probabilities" in answer:
                 top, second = (sorted(answer["probabilities"].values(), reverse=True) + [0.0])[:2]
@@ -615,7 +640,7 @@ def _validate_choice(
             and 0 <= confidence <= 1
         ):
             return answer
-        raise ValueError(f"Invalid {provider} choice response; no action executed")
+        raise InvalidChoiceResponse(f"Invalid {provider} choice response; no action executed")
     try:
         probabilities = answer["probabilities"]
         numbers = [*probabilities.values(), answer["confidence"]]
@@ -630,7 +655,7 @@ def _validate_choice(
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
-        raise ValueError(f"Invalid {provider} choice response; no action executed")
+        raise InvalidChoiceResponse(f"Invalid {provider} choice response; no action executed")
     return answer
 
 

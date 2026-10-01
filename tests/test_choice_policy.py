@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from arc_cua import ActionKind, DesktopElement, DesktopSnapshot, Subtask, TerminalKind
-from arc_cua.policies import ChoicePolicy, TypeSafeJevPolicy
+from arc_cua.policies import ChoicePolicy, InvalidChoiceResponse, TypeSafeJevPolicy
 
 
 class FakeTransport:
@@ -63,6 +63,33 @@ def test_invalid_answer_names_the_provider_and_executes_nothing() -> None:
         ChoicePolicy(transport).decide(
             subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
         )
+
+
+def test_invalid_answer_is_asked_again_once() -> None:
+    transport = FakeTransport({"operation": "CLICK", "click_target": "save", "click_modifier": "NONE"})
+    transport.selections["click_target"] = "invented"
+    ask = transport.ask
+
+    def ask_then_fix(state, questions):
+        answer = ask(state, questions)
+        transport.selections["click_target"] = "save"
+        return answer
+
+    transport.ask = ask_then_fix
+    decision = ChoicePolicy(transport).decide(
+        subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
+    )
+    assert decision.target_id == "save"
+    assert len(transport.calls) == 2
+
+
+def test_invalid_answers_stop_after_the_retry_and_name_the_question() -> None:
+    transport = FakeTransport({"operation": "CLICK", "click_target": "invented"})
+    with pytest.raises(InvalidChoiceResponse, match=r"no action executed \(question: click_target\)"):
+        ChoicePolicy(transport, invalid_retries=2).decide(
+            subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=(),
+        )
+    assert len(transport.calls) == 3
 
 
 def test_terminal_answer_needs_no_target() -> None:

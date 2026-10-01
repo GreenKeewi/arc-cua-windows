@@ -87,10 +87,12 @@ class TypeSafeJevPolicy(ChoicePolicy):
         timeout_s: float = 25,
         max_candidates: int = 240,
         client: httpx.Client | None = None,
+        invalid_retries: int = 1,
     ) -> None:
         super().__init__(
             TypeSafeTransport(api_key=api_key, model=model, base_url=base_url, timeout_s=timeout_s, client=client),
             max_candidates=max_candidates,
+            invalid_retries=invalid_retries,
         )
 
 
