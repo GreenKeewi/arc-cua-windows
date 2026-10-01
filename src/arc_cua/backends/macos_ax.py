@@ -6,7 +6,7 @@ import logging
 import re
 import sys
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -20,7 +20,18 @@ from .macos_events import AXEventMonitor
 
 logger = logging.getLogger(__name__)
 
+# How long observe() waits for an app that momentarily shows no window.
+_WINDOW_WAIT_S = 1.0
 _TEXT_ROLES = {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
+_ROW_ROLES = {"AXRow", "AXCell"}
+
+
+@dataclass(frozen=True)
+class RowState:
+    """The list, table or outline row an element is inside."""
+
+    selected: bool | None
+_ROW_CONTENT_ROLES = {"AXStaticText", "AXImage"}
 _VALUE_ROLES = _TEXT_ROLES | {"AXSlider", "AXIncrementor"}
 
 
@@ -92,26 +103,35 @@ class MacOSAXBackend:
 
     def observe(self) -> DesktopSnapshot:
         AS, _ = _frameworks()
-        on_screen = {window.window_id for window in self.app.windows()}
-        if not on_screen:
-            self.app.require_window()  # Raises TargetUnavailable with the reason.
+        app_name = self.app.name
+        # An app replacing its window (a folder opening, a document switching) briefly
+        # shows none; wait for the new one before reporting the app unavailable.
+        deadline = time.monotonic() + _WINDOW_WAIT_S
+        while True:
+            on_screen = {window.window_id for window in self.app.windows()}
+            root = focused = None
+            if on_screen:
+                app_ref = self.app.ax
+                self._request_full_tree(AS, app_ref)
+                focused = _attr(AS, app_ref, "AXFocusedUIElement")
+                candidates = [
+                    _attr(AS, app_ref, "AXFocusedWindow"),
+                    _attr(AS, app_ref, "AXMainWindow"),
+                    _attr(AS, focused, "AXWindow") if focused is not None else None,
+                    *(_attr(AS, app_ref, "AXWindows") or ()),
+                ]
+                # The focused window can be on another desktop; observe one the app shows here.
+                root = next((w for w in candidates if w is not None and window_id(w) in on_screen), None)
+            if root is not None:
+                break
+            if time.monotonic() >= deadline:
+                if not on_screen:
+                    self.app.require_window()  # Raises TargetUnavailable with the reason.
+                self.app.check_running()
+                raise TargetUnavailable(f"{app_name} exposes no on-screen window to accessibility.")
+            time.sleep(0.05)
         self._identities.begin_observation()
         pid = self.app.pid
-        app_name = self.app.name
-        app_ref = self.app.ax
-        self._request_full_tree(AS, app_ref)
-        focused = _attr(AS, app_ref, "AXFocusedUIElement")
-        candidates = [
-            _attr(AS, app_ref, "AXFocusedWindow"),
-            _attr(AS, app_ref, "AXMainWindow"),
-            _attr(AS, focused, "AXWindow") if focused is not None else None,
-            *(_attr(AS, app_ref, "AXWindows") or ()),
-        ]
-        # The focused window can be on another desktop; observe one the app shows here.
-        root = next((w for w in candidates if w is not None and window_id(w) in on_screen), None)
-        if root is None:
-            self.app.check_running()
-            raise TargetUnavailable(f"{app_name} exposes no on-screen window to accessibility.")
         focused_window = window_id(_attr(AS, focused, "AXWindow")) if focused is not None else None
         if focused_window is not None and focused_window not in on_screen:
             focused = None
@@ -300,6 +320,7 @@ class MacOSAXBackend:
         depth: int,
         clip: Bounds | None = None,
         refresh: bool = False,
+        row: RowState | None = None,
     ) -> None:
         """Walk what is on screen: `clip` is the visible area of the enclosing window
         and scroll areas. Elements with area outside it are skipped with their subtree;
@@ -311,7 +332,7 @@ class MacOSAXBackend:
             return
         visited.add(element_id)
 
-        node, refresh = self._node(AS, ref, element_id, parent_id, refresh)
+        node, refresh = self._node(AS, ref, element_id, parent_id, refresh, row)
         if clip is not None:
             bounds = node.bounds
             if depth > 0 and bounds is not None and bounds.width > 0 and bounds.height > 0 \
@@ -328,13 +349,20 @@ class MacOSAXBackend:
             refs[element.id] = ref
             next_parent = element.id
 
+        child_row = row
+        if node.role in _ROW_ROLES:
+            # A list row carries the selection; the text and icons inside it show it.
+            selected = (node.attributes or {}).get("AXSelected")
+            child_row = RowState(selected=bool(selected) if selected is not None else (row and row.selected))
         for child in node.children:
             if len(elements) >= self.max_elements:
                 break
             self._walk(AS, child, elements, refs, visited, parent_id=next_parent, depth=depth + 1,
-                       clip=clip, refresh=refresh)
+                       clip=clip, refresh=refresh, row=child_row)
 
-    def _node(self, AS: Any, ref: Any, element_id: str, parent_id: str | None, refresh: bool) -> tuple[AXNode, bool]:
+    def _node(
+        self, AS: Any, ref: Any, element_id: str, parent_id: str | None, refresh: bool, row: RowState | None = None,
+    ) -> tuple[AXNode, bool]:
         """The element's node, from the cache when it is unchanged; and whether its
         subtree must be read again."""
         cache = self._cache
@@ -345,17 +373,19 @@ class MacOSAXBackend:
                 if node.element is not None and node.element.parent_id != parent_id:
                     node.element = replace(node.element, parent_id=parent_id)
                 return node, False
-        node = self._read_node(AS, ref, element_id, parent_id)
+        node = self._read_node(AS, ref, element_id, parent_id, row)
         if cache is not None:
             cache.store(ref, node)
         return node, refresh
 
-    def _read_node(self, AS: Any, ref: Any, element_id: str, parent_id: str | None) -> AXNode:
+    def _read_node(
+        self, AS: Any, ref: Any, element_id: str, parent_id: str | None, row: RowState | None = None,
+    ) -> AXNode:
         attributes = copy_attributes(AS, ref, _ELEMENT_ATTRIBUTES)
         role = str(attributes.get("AXRole") or "") if attributes is not None else ""
         bounds = _bounds_from_values(AS, attributes.get("AXPosition"), attributes.get("AXSize")) \
             if attributes is not None else _ax_bounds(AS, ref)
-        element = self._element_from_ref(ref, element_id, parent_id=parent_id, attributes=attributes)
+        element = self._element_from_ref(ref, element_id, parent_id=parent_id, attributes=attributes, row=row)
         children = _children(AS, ref, role, attributes)
         return AXNode(attributes, role, bounds, element, children, is_modal(role, attributes))
 
@@ -377,6 +407,7 @@ class MacOSAXBackend:
         element_id: str,
         parent_id: str | None,
         attributes: dict[str, Any] | None = None,
+        row: RowState | None = None,
     ) -> DesktopElement | None:
         AS, _ = _frameworks()
         if attributes is None:
@@ -399,13 +430,20 @@ class MacOSAXBackend:
         enabled = get("AXEnabled")
         focused = get("AXFocused")
         selected = get("AXSelected")
+        if selected is None and row is not None and row.selected is not None:
+            selected = row.selected
         expanded = get("AXExpanded")
         identifier = get("AXIdentifier")
         action_names = _action_names(AS, ref)
         bounds = _bounds_from_values(AS, get("AXPosition"), get("AXSize")) if batched else _ax_bounds(AS, ref)
 
         capabilities: list[ActionKind] = []
-        if "AXPress" in action_names or (bounds is not None and (role in _TEXT_ROLES or "AXOpen" in action_names)):
+        # Text in a list, table or outline row has no press action, but a click on it
+        # selects the row (a sidebar item, a search result).
+        row_text = row is not None and role in _ROW_CONTENT_ROLES
+        if "AXPress" in action_names or (
+            bounds is not None and (role in _TEXT_ROLES or "AXOpen" in action_names or row_text)
+        ):
             capabilities.append(ActionKind.CLICK)
         if "AXOpen" in action_names and bounds is not None:
             capabilities.append(ActionKind.DOUBLE_CLICK)

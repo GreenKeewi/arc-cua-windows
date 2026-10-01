@@ -258,6 +258,24 @@ def test_observe_uses_a_window_on_this_desktop_not_the_focused_one_elsewhere(mon
     assert snapshot.context["pid"] == 123
 
 
+def test_observe_waits_for_an_app_that_is_replacing_its_window(monkeypatch):
+    install_cf(monkeypatch)
+    window = Ref("window", AXTitle="Invoices")
+    app = Ref("app", AXFocusedWindow=window, AXMainWindow=window, AXWindows=[window])
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name))
+    monkeypatch.setattr(macos_ax, "window_id", lambda ref: 1)
+    polls = iter([[], [], [SimpleNamespace(window_id=1)]])
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    backend.app = fake_app(ax=app, windows=lambda: next(polls, [SimpleNamespace(window_id=1)]))
+    backend.max_depth, backend.max_elements = 10, 10
+    backend._identities = macos_ax._AXIdentityRegistry()
+    backend._full_tree_supported = True
+    backend._element_from_ref = lambda ref, identity, **kw: DesktopElement(id=identity, role="Window", name="")
+    assert backend.observe().window == "Invoices"
+
+
 def test_observe_fails_clearly_when_the_app_has_no_usable_window(monkeypatch):
     def no_window():
         raise TargetUnavailable("Editor has no open window on this desktop.")
@@ -266,6 +284,7 @@ def test_observe_fails_clearly_when_the_app_has_no_usable_window(monkeypatch):
     backend._cache = None
     backend.app = fake_app(windows=lambda: [], require_window=no_window)
     monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
+    monkeypatch.setattr(macos_ax, "_WINDOW_WAIT_S", 0.1)
     with pytest.raises(TargetUnavailable, match="no open window"):
         backend.observe()
 
@@ -350,6 +369,26 @@ def test_settable_is_queried_only_for_elements_with_a_value(monkeypatch, value, 
     attributes = {name: None for name in macos_ax._ELEMENT_ATTRIBUTES} | {"AXRole": "AXStaticText", "AXValue": value}
     backend._element_from_ref(Ref("text"), "ax_1", parent_id=None, attributes=attributes)
     assert (calls == ["AXValue"]) is queried
+
+
+@pytest.mark.parametrize(("row", "clickable", "selected"), [
+    (macos_ax.RowState(selected=True), True, True),
+    (macos_ax.RowState(selected=None), True, None),
+    (None, False, None),
+])
+def test_text_in_a_row_is_clickable_and_shows_the_row_selection(monkeypatch, row, clickable, selected):
+    api = SimpleNamespace(AXUIElementIsAttributeSettable=lambda ref, name, _: (0, False),
+                          AXUIElementCopyActionNames=lambda ref, _: (0, ["AXShowMenu"]))
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
+    monkeypatch.setattr(macos_ax, "_bounds_from_values", lambda *args: Bounds(0, 0, 80, 20))
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    attributes = {name: None for name in macos_ax._ELEMENT_ATTRIBUTES}
+    attributes |= {"AXRole": "AXStaticText", "AXValue": "Appearance"}
+    element = backend._element_from_ref(Ref("text"), "ax_1", parent_id=None, attributes=attributes, row=row)
+    assert (ActionKind.CLICK in element.actions) is clickable
+    assert ActionKind.RIGHT_CLICK in element.actions
+    assert element.selected is selected
 
 
 def test_full_tree_request_stops_for_apps_that_do_not_support_it():
