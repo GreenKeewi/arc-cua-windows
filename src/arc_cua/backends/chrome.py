@@ -182,6 +182,11 @@ class ChromeBackend:
         })["result"].get("value", "")
         self._mac = str(platform).startswith("Mac")
 
+    @property
+    def pid(self) -> int | None:
+        """Process ID of the Chrome started by `launch()`; None after `connect()`."""
+        return self._process.process.pid if self._process is not None else None
+
     def close(self) -> None:
         try:
             if self._owns_target:
