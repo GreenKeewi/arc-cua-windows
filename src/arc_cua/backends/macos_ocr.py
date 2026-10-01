@@ -50,7 +50,7 @@ class MacOSOCRProvider:
     def __init__(
         self,
         *,
-        recognition_level: str = "fast",
+        recognition_level: str = "accurate",
         min_confidence: float = 0.45,
         minimum_text_height: float = 0.006,
         max_elements: int = 160,
@@ -348,6 +348,12 @@ class MacOSOCRProvider:
                             ),
                             "window_id":
                                 window.window_id,
+                            # OCR text has no hierarchy; where it sits
+                            # in the window is its only context.
+                            "position": _position(
+                                x + width / 2,
+                                1.0 - (y + height / 2),
+                            ),
                         },
 
                         guard=_ocr_guard(
@@ -435,6 +441,13 @@ class MacOSOCRProvider:
                     return window
 
         return candidates[0]
+
+
+def _position(center_x: float, center_y: float) -> str:
+    """Coarse place in the window ("bottom left") from a normalized center, top-left origin."""
+    row = "top" if center_y < 1 / 3 else "middle" if center_y < 2 / 3 else "bottom"
+    column = "left" if center_x < 1 / 3 else "center" if center_x < 2 / 3 else "right"
+    return f"{row} {column}"
 
 
 def on_screen_windows(pid: int) -> list[MacOSWindow]:

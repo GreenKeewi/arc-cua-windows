@@ -93,7 +93,7 @@ class MacOSHybridBackend:
         *,
         max_ax_elements: int = 1200,
         max_ax_depth: int = 18,
-        ocr_recognition_level: str = "fast",
+        ocr_recognition_level: str = "accurate",
         ocr_min_confidence: float = 0.45,
         ocr_max_elements: int = 160,
         ocr: str = "auto",

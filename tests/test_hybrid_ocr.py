@@ -72,3 +72,12 @@ def test_ocr_runs_only_when_needed(monkeypatch, mode, elements, ocr_used):
 def test_unknown_ocr_mode_is_rejected():
     with pytest.raises(ValueError, match="ocr must be one of"):
         macos_hybrid.MacOSHybridBackend(1, ocr="sometimes")
+
+
+@pytest.mark.parametrize(("center", "expected"), [
+    ((0.1, 0.1), "top left"), ((0.5, 0.5), "middle center"), ((0.2, 0.95), "bottom left"), ((0.9, 0.4), "middle right"),
+])
+def test_ocr_text_position_is_a_coarse_place_in_the_window(center, expected):
+    from arc_cua.backends.macos_ocr import _position
+
+    assert _position(*center) == expected
