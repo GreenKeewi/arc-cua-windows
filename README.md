@@ -4,8 +4,6 @@
 
 Ships with a lean macOS driver you can use on its own, without the rest of arc-cua: see [docs/driver.md](docs/driver.md).
 
-> Built by [Isle](https://tryisle.com) — managed desktop environments for computer-use agents.
-
 ---
 
 `arc-cua` lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model that executes the UI loop — no frontier model needed for every click.
