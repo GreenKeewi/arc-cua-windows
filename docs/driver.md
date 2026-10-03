@@ -224,9 +224,11 @@ On an Apple-silicon Mac running macOS 26.6, through `arc-cua mcp` (medians):
 | Observe and click in a minimized window / a hidden app | 49 / 22 ms |
 | Act on a snapshot taken before a sheet opened | refused in 5 ms, fresh snapshot returned |
 
-`examples/driver_bench/bench.py` reproduces these on your Mac, against real apps and
-a native fixture app whose state is checked without going through the driver. It
+`python benchmarks/run.py primitives` reproduces these on your Mac, against real apps
+and a native fixture app whose state is checked without going through the driver; it
 also checks that no action moved the user's pointer or changed their front app.
+`benchmarks/run.py workflows` times realistic multi-step tasks end to end, and
+`benchmarks/run.py compare` compares two runs. See [benchmarks/README.md](../benchmarks/README.md).
 
 ## Limits
 

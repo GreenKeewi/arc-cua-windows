@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Team Signup</title>
+  <style>
+    body { font: 14px -apple-system, sans-serif; margin: 16px; }
+    label { display: block; margin: 10px 0 4px; }
+    input[type=text], input[type=email], select, input[type=date] { width: 260px; padding: 4px; }
+    fieldset { border: none; padding: 0; margin: 10px 0; }
+    button { margin-top: 14px; padding: 6px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Team signup</h1>
+  <form id="signup">
+    <label for="name">Full name</label>
+    <input id="name" name="name" type="text" required>
+
+    <label for="email">Work email</label>
+    <input id="email" name="email" type="email" required>
+
+    <label for="team">Team</label>
+    <select id="team" name="team" required>
+      <option value="">Choose a team</option>
+      <option>Design</option>
+      <option>Engineering</option>
+      <option>Finance</option>
+      <option>Operations</option>
+    </select>
+
+    <label for="start">Start date</label>
+    <input id="start" name="start" type="date" required>
+
+    <label for="experience">Years of experience</label>
+    <input id="experience" name="experience" type="range" min="0" max="20" step="1" value="0">
+
+    <fieldset>
+      <legend>Plan</legend>
+      <label><input type="radio" name="plan" value="starter" checked> Starter</label>
+      <label><input type="radio" name="plan" value="team"> Team</label>
+      <label><input type="radio" name="plan" value="enterprise"> Enterprise</label>
+    </fieldset>
+
+    <label><input id="updates" name="updates" type="checkbox"> Send me product updates</label>
+
+    <button type="submit">Create account</button>
+  </form>
+  <p id="status" role="status"></p>
+  <script>
+    // What the page saw, recorded from its own input events; the workflow reads it.
+    window.__events = 0;
+    document.getElementById('signup').addEventListener('input', () => { window.__events += 1; });
+    window.__submitted = null;
+    document.getElementById('signup').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const data = new FormData(event.target);
+      window.__submitted = {
+        name: data.get('name'),
+        email: data.get('email'),
+        team: data.get('team'),
+        start: data.get('start'),
+        experience: Number(data.get('experience')),
+        plan: data.get('plan'),
+        updates: data.get('updates') === 'on',
+      };
+      document.getElementById('status').textContent = 'Account created';
+    });
+  </script>
+</body>
+</html>

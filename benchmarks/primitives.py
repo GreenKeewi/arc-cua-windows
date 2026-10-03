@@ -6,16 +6,16 @@ oracles outside arc: the fixture form writes its own state to a file, and
 Calculator's display is read with a separate accessibility call. Every action
 also checks that the user's front app and pointer did not change.
 
-    python examples/driver_bench/bench.py [--quick] [--only SCENARIO ...]
+    python benchmarks/run.py primitives [--quick] [--only SCENARIO ...]
 
-Results print as Markdown and are saved to output/driver_bench/.
+Results print as Markdown and are saved to output/benchmarks/ with the arc version
+and commit, so runs of different versions can be compared (benchmarks/run.py compare).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import platform
 import statistics
 import subprocess
 import sys
@@ -26,12 +26,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import AppKit  # noqa: E402
 import ApplicationServices as AS  # noqa: E402
+import common  # noqa: E402
 import Quartz  # noqa: E402
 from mcp_client import MCPClient, MCPError  # noqa: E402
 
@@ -41,7 +42,7 @@ from arc_cua.driver import Driver  # noqa: E402
 from arc_cua.models import ActionKind, ExecutableAction  # noqa: E402
 from arc_cua.runtime import DesktopExecutor  # noqa: E402
 
-OUT = ROOT / "output" / "driver_bench"
+OUT = ROOT / "output" / "benchmarks"
 FIXTURE = Path(__file__).resolve().parent / "fixture_form.py"
 FINDER_DIR = OUT / "finder2000"
 
@@ -843,7 +844,8 @@ def scenario_menu(drivers, reps, results, invariants) -> None:
 
 def markdown(results: list[dict[str, Any]], meta: dict[str, Any]) -> str:
     lines = [
-        f"macOS {meta['macos']} · {meta['machine']} · {meta['reps']} repetitions",
+        f"arc {meta.get('arc_version')} @ {meta.get('commit')} · macOS {meta['macos']} · "
+        f"{meta.get('chip') or meta['machine']} · {meta['reps']} repetitions",
         "",
         "| scenario | target | driver | median ms | p90 ms | first ms | elements | KB | notes |",
         "|---|---|---|---|---|---|---|---|---|",
@@ -872,11 +874,11 @@ def markdown(results: list[dict[str, Any]], meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
+def main(argv: list[str] | None = None) -> Path:
+    parser = argparse.ArgumentParser(prog="benchmarks/run.py primitives")
     parser.add_argument("--quick", action="store_true", help="fewer repetitions")
     parser.add_argument("--only", nargs="*", default=None)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     OUT.mkdir(parents=True, exist_ok=True)
     reps = 5 if args.quick else 20
 
@@ -923,19 +925,18 @@ def main() -> None:
         for driver in drivers:
             driver.close()
 
-    meta = {
-        "macos": platform.mac_ver()[0],
-        "machine": platform.machine(),
-        "invariants_checked": invariants.checked,
-        "violations": invariants.violations,
-        "user_input": invariants.user_input,
-        "reps": reps,
-    }
-    report = markdown(results, meta)
+    run_meta = common.meta(
+        suite="primitives",
+        invariants_checked=invariants.checked,
+        violations=invariants.violations,
+        user_input=invariants.user_input,
+        reps=reps,
+    )
+    report = markdown(results, run_meta)
     print(report)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    (OUT / f"results-{stamp}.json").write_text(json.dumps({"meta": meta, "results": results}, indent=2))
-    (OUT / f"results-{stamp}.md").write_text(report + "\n")
+    path = common.save("primitives", results, run_meta, report)
+    print(f"saved {path}", file=sys.stderr)
+    return path
 
 
 if __name__ == "__main__":

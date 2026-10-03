@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Inventory</title>
+  <style>
+    body { font: 14px -apple-system, sans-serif; margin: 16px; }
+    table { border-collapse: collapse; }
+    td, th { border: 1px solid #ccc; padding: 4px 8px; }
+    input { width: 120px; }
+    button { margin-top: 14px; padding: 6px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Inventory</h1>
+  <table>
+    <thead><tr><th>Item</th><th>Count</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <button id="save" type="button">Save counts</button>
+  <p id="status" role="status"></p>
+  <script>
+    // 60 rows, so the ones near the end start out of view.
+    const rows = document.getElementById('rows');
+    for (let i = 1; i <= 60; i++) {
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>Item ${i}</td><td><input aria-label="Count for item ${i}" value="${i}"></td>`;
+      rows.appendChild(row);
+    }
+    window.__saved = null;
+    document.getElementById('save').addEventListener('click', () => {
+      window.__saved = Object.fromEntries(
+        [...rows.querySelectorAll('input')].map((input, index) => [index + 1, input.value]),
+      );
+      document.getElementById('status').textContent = 'Saved';
+    });
+  </script>
+</body>
+</html>
