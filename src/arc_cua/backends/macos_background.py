@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import logging
+import math
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -356,6 +357,18 @@ def click(
 
 def drag(pid: int, window: int, start: tuple[float, float], end: tuple[float, float]) -> None:
     """Press at ``start``, move in steps to ``end`` and release, addressed to ``window``."""
+    drag_path(pid, window, [start, end])
+
+
+def drag_path(pid: int, window: int, points: list[tuple[float, float]], *, step_px: float = 12.0) -> None:
+    """Press at the first point, move through the others and release at the last.
+
+    Moves come at most ``step_px`` apart: apps and drag-and-drop only recognize a
+    drag from a stream of drag events past a small threshold, not a jump."""
+    if len(points) < 2:
+        raise UnsupportedDesktopAction("A drag needs at least two points")
+    start = points[0]
+    end = points[-1]
     Q = _quartz()
     with borrowed_focus(pid, window):
         source = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
@@ -379,10 +392,13 @@ def drag(pid: int, window: int, start: tuple[float, float], end: tuple[float, fl
 
         emit(Q.kCGEventMouseMoved, start, phase=2, clicks=0, delay=0.015)
         emit(Q.kCGEventLeftMouseDown, start, phase=3, clicks=1, delay=0.05)
-        for step in range(1, 11):
-            t = step / 10
-            point = (start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t)
-            emit(Q.kCGEventLeftMouseDragged, point, phase=3, clicks=1, delay=0.02)
+        for previous, point in zip(points, points[1:]):
+            distance = math.hypot(point[0] - previous[0], point[1] - previous[1])
+            steps = max(1, math.ceil(distance / step_px))
+            for step in range(1, steps + 1):
+                t = step / steps
+                at = (previous[0] + (point[0] - previous[0]) * t, previous[1] + (point[1] - previous[1]) * t)
+                emit(Q.kCGEventLeftMouseDragged, at, phase=3, clicks=1, delay=0.008)
         emit(Q.kCGEventLeftMouseUp, end, phase=3, clicks=1, delay=0.03)
 
 

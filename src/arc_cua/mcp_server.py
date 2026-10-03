@@ -5,14 +5,18 @@ macOS apps in the background through it. MCP's stdio transport is JSON-RPC with
 one message per line, implemented here directly.
 
 Tools: ``apps``, ``windows``, ``observe``, ``act``, ``wait``, ``commands`` and
-``run_command``. An observation returns a snapshot id and the window's elements,
-each with an id and the actions it offers; ``act`` names the snapshot, the element
-and the action. If the app's structure changed since the snapshot (a sheet, window
-or menu came or went), ``act`` does not act and returns a fresh snapshot instead.
+``run_command``; for what accessibility does not cover, ``screenshot``, ``click_at``,
+``drag``, ``scroll_at``, ``press`` and ``type_text`` at points in the window.
+
+An observation returns a snapshot id and the window's elements, each with an id
+and the actions it offers; ``act`` names the snapshot, the element and the action.
+If the app's structure changed since the snapshot (a sheet, window or menu came or
+went), ``act`` does not act and returns a fresh snapshot instead.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import sys
@@ -26,6 +30,7 @@ logger = logging.getLogger("arc_cua.mcp")
 
 PROTOCOL_VERSION = "2025-06-18"
 _KEEP_SNAPSHOTS = 64
+_IMAGE = "_png"  # A tool's PNG, sent as image content rather than in the JSON.
 
 INSTRUCTIONS = (
     "Control macOS apps in the background: the user's pointer, front app and windows stay as they are. "
@@ -58,11 +63,16 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Read the app's front window (or its minimized window, or a hidden app's window) as elements: "
             "id, role, name, value and the actions each offers. Only what is on screen in the window is read. "
-            "Returns a snapshot id for act. query keeps elements whose role, name or value contains it."
+            "Returns a snapshot id for act. query keeps elements whose role, name or value contains it. "
+            "Elements have no coordinates; use screenshot and click_at for what they do not cover."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"pid": {"type": "integer"}, "query": {"type": "string"}},
+            "properties": {
+                "pid": {"type": "integer"},
+                "query": {"type": "string"},
+                "screenshot": {"type": "boolean", "description": "Also return a PNG of the window."},
+            },
             "required": ["pid"],
             "additionalProperties": False,
         },
@@ -138,6 +148,102 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+_POINT = {"type": "number"}
+_RAW_COMMON = {
+    "window_id": {"type": "integer", "description": "Defaults to the app's front window."},
+    "snapshot": {"type": "string", "description": "Refuse the input if the app changed since this snapshot."},
+}
+
+RAW_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "screenshot",
+        "description": (
+            "PNG of the app's window, for canvases and custom-drawn UI that observe does not cover. "
+            "scale is image pixels per window point: divide pixel positions by it for click_at."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"pid": {"type": "integer"}, "window_id": {"type": "integer"}},
+            "required": ["pid"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "click_at",
+        "description": (
+            "Click at x, y: points from the window's top-left corner. Prefer act on an element when one exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pid": {"type": "integer"}, "x": _POINT, "y": _POINT,
+                "button": {"type": "string", "enum": ["left", "right"]},
+                "count": {"type": "integer", "minimum": 1, "maximum": 3},
+                "modifiers": {"type": "array", "items": {"type": "string", "enum": ["MOD", "SHIFT", "ALT", "CTRL"]}},
+                **_RAW_COMMON,
+            },
+            "required": ["pid", "x", "y"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "drag",
+        "description": (
+            "Press at the first point, move through the others and release at the last "
+            "(sliders, canvases, drag and drop)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pid": {"type": "integer"},
+                "points": {
+                    "type": "array", "minItems": 2,
+                    "items": {"type": "array", "items": _POINT, "minItems": 2, "maxItems": 2},
+                },
+                **_RAW_COMMON,
+            },
+            "required": ["pid", "points"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "scroll_at",
+        "description": "Scroll the content under x, y by dx, dy points; positive dy shows what is above.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pid": {"type": "integer"}, "x": _POINT, "y": _POINT, "dx": _POINT, "dy": _POINT, **_RAW_COMMON,
+            },
+            "required": ["pid", "x", "y"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "press",
+        "description": "Press a key (ENTER, TAB, ESCAPE, ARROW_DOWN...) or a chord (MOD+S; MOD is Command) in the app.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"pid": {"type": "integer"}, "keys": {"type": "string"}, "snapshot": _RAW_COMMON["snapshot"]},
+            "required": ["pid", "keys"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "type_text",
+        "description": (
+            "Type text as key events where the app has key focus. To fill a field, prefer act with SET_VALUE."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"pid": {"type": "integer"}, "text": {"type": "string"}, "snapshot": _RAW_COMMON["snapshot"]},
+            "required": ["pid", "text"],
+            "additionalProperties": False,
+        },
+    },
+]
+TOOLS += RAW_TOOLS
+
+
 class ToolError(Exception):
     pass
 
@@ -205,8 +311,58 @@ class Server:
             for w in self.driver.windows(pid)
         ]}
 
-    def tool_observe(self, pid: int, query: str | None = None) -> dict[str, Any]:
-        return self._render(self.driver.observe(pid), query)
+    def tool_observe(self, pid: int, query: str | None = None, screenshot: bool = False) -> dict[str, Any]:
+        result = self._render(self.driver.observe(pid), query)
+        if screenshot:
+            result.update(self.tool_screenshot(pid))
+        return result
+
+    def tool_screenshot(self, pid: int, window_id: int | None = None) -> dict[str, Any]:
+        shot = self.driver.screenshot(pid, window_id=window_id)
+        return {
+            "screenshot": {"width": shot.width, "height": shot.height, "scale": round(shot.scale, 4),
+                           "window_id": shot.window_id, "title": shot.title},
+            _IMAGE: shot.png,
+        }
+
+    def _raw_result(self, result: Any) -> dict[str, Any]:
+        response: dict[str, Any] = {"status": result.status, "elapsed_ms": round(result.elapsed_ms, 1)}
+        if result.changes:
+            response["changes"] = list(result.changes)
+        if result.snapshot is not None:
+            response["fresh"] = self._render(result.snapshot)
+        return response
+
+    def _maybe(self, snapshot: str | None) -> DesktopSnapshot | None:
+        return self._snapshot(snapshot) if snapshot else None
+
+    def tool_click_at(
+        self, pid: int, x: float, y: float, button: str = "left", count: int = 1, modifiers: list[str] | None = None,
+        window_id: int | None = None, snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        return self._raw_result(self.driver.click_at(
+            pid, x, y, button=button, count=count, modifiers=tuple(modifiers or ()), window_id=window_id,
+            snapshot=self._maybe(snapshot),
+        ))
+
+    def tool_drag(
+        self, pid: int, points: list[list[float]], window_id: int | None = None, snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        return self._raw_result(self.driver.drag(pid, points, window_id=window_id, snapshot=self._maybe(snapshot)))
+
+    def tool_scroll_at(
+        self, pid: int, x: float, y: float, dx: float = 0, dy: float = 0, window_id: int | None = None,
+        snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        return self._raw_result(self.driver.scroll_at(
+            pid, x, y, dx=dx, dy=dy, window_id=window_id, snapshot=self._maybe(snapshot),
+        ))
+
+    def tool_press(self, pid: int, keys: str, snapshot: str | None = None) -> dict[str, Any]:
+        return self._raw_result(self.driver.press(pid, keys, snapshot=self._maybe(snapshot)))
+
+    def tool_type_text(self, pid: int, text: str, snapshot: str | None = None) -> dict[str, Any]:
+        return self._raw_result(self.driver.type_text(pid, text, snapshot=self._maybe(snapshot)))
 
     def tool_act(
         self, snapshot: str, action: str, element: str | None = None, value: Any = None, key: str | None = None,
@@ -268,8 +424,12 @@ class Server:
             content = self.call(name, arguments)
         except (ToolError, JevDesktopError, ValueError, TypeError) as exc:
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+        image = content.pop(_IMAGE, None)
         text = json.dumps(content, ensure_ascii=False, separators=(",", ":"), default=str)
-        return {"content": [{"type": "text", "text": text}], "structuredContent": content}
+        parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        if image is not None:
+            parts.append({"type": "image", "data": base64.b64encode(image).decode("ascii"), "mimeType": "image/png"})
+        return {"content": parts, "structuredContent": content}
 
     def serve(self, stdin: IO[str], stdout: IO[str]) -> None:
         for line in stdin:

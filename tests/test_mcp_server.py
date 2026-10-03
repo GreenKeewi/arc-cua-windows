@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 
@@ -71,3 +72,49 @@ def test_serve_answers_line_by_line():
     assert replies[0] == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert replies[1]["error"]["code"] == -32700
     assert len(replies) == 2
+
+
+class RawDriver:
+    """Stands in for Driver's pixel methods."""
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def screenshot(self, pid, window_id=None):
+        from arc_cua.driver import Screenshot
+
+        return Screenshot(png=b"\x89PNG fake", width=400, height=300, scale=2.0, window_id=7, title="Canvas")
+
+    def click_at(self, pid, x, y, **options):
+        from arc_cua.driver import ActResult
+
+        self.calls.append(("click_at", x, y, options))
+        return ActResult("done", None, (), 1.0)
+
+    def close(self):
+        pass
+
+
+def test_screenshot_is_sent_as_image_content():
+    srv = Server(RawDriver())
+    result = call(srv, "screenshot", pid=PID)
+    assert result["structuredContent"]["screenshot"]["scale"] == 2.0
+    assert "_png" not in result["structuredContent"]
+    image = result["content"][1]
+    assert image["type"] == "image" and image["mimeType"] == "image/png"
+    assert base64.b64decode(image["data"]) == b"\x89PNG fake"
+
+
+def test_click_at_passes_points_and_options():
+    driver = RawDriver()
+    srv = Server(driver)
+    result = call(srv, "click_at", pid=PID, x=12.5, y=40, button="right", modifiers=["SHIFT"])
+    assert result["structuredContent"]["status"] == "done"
+    assert driver.calls == [("click_at", 12.5, 40, {
+        "button": "right", "count": 1, "modifiers": ("SHIFT",), "window_id": None, "snapshot": None,
+    })]
+
+
+def test_raw_tools_are_listed():
+    tools = Server(RawDriver()).handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
+    assert {"screenshot", "click_at", "drag", "scroll_at", "press", "type_text"} <= {t["name"] for t in tools}

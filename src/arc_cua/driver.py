@@ -43,6 +43,16 @@ class ActResult:
         return self.status == "done"
 
 
+@dataclass(frozen=True, slots=True)
+class Screenshot:
+    png: bytes
+    width: int  # Image size in pixels.
+    height: int
+    scale: float  # Image pixels per window point.
+    window_id: int
+    title: str
+
+
 class _App:
     def __init__(self, pid: int) -> None:
         from .backends.macos_ax import MacOSAXBackend
@@ -180,23 +190,147 @@ class Driver:
         action = _action(snapshot, kind, target, value=value, key=key, hotkey=hotkey,
                          scroll_direction=scroll_direction, click_modifier=click_modifier)
 
-        changes = app.journal.since(snapshot.context.get(_MARKER, app.journal.sequence))
-        if changes:
-            fresh = self.observe(pid)
-            if {e.id for e in fresh.elements} != {e.id for e in snapshot.elements}:
-                return ActResult(
-                    "changed", fresh, tuple(f"{c.notification} {c.role}".strip() for c in changes),
-                    (time.perf_counter() - started) * 1000,
-                )
-            # Announced late: the snapshot already showed the change. Act on the fresh one,
-            # which the backend's references now belong to.
-            snapshot = fresh
+        refused, snapshot = self._check(snapshot, started)
+        if refused is not None:
+            return refused
         try:
             app.backend.execute(snapshot, action)
         except StaleDesktopState:
             return ActResult("stale", self.observe(pid), (), (time.perf_counter() - started) * 1000)
         return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
 
+
+    def _check(self, snapshot: DesktopSnapshot, started: float) -> tuple[ActResult | None, DesktopSnapshot]:
+        """A "changed" result when the app's structure changed under ``snapshot``;
+        otherwise the snapshot to act on (a fresh one when a change was announced late)."""
+        pid = snapshot.context["pid"]
+        app = self._app(pid)
+        changes = app.journal.since(snapshot.context.get(_MARKER, app.journal.sequence))
+        if not changes:
+            return None, snapshot
+        fresh = self.observe(pid)
+        if {e.id for e in fresh.elements} != {e.id for e in snapshot.elements}:
+            return ActResult(
+                "changed", fresh, tuple(f"{c.notification} {c.role}".strip() for c in changes),
+                (time.perf_counter() - started) * 1000,
+            ), fresh
+        # Announced late: the snapshot already showed the change. Act on the fresh one,
+        # which the backend's references now belong to.
+        return None, fresh
+
+    # ---- pixels and raw input --------------------------------------------------
+    #
+    # For what accessibility does not expose: canvases, custom-drawn controls, drags.
+    # Points are relative to the top-left corner of the window, in points (not pixels);
+    # a screenshot reports its scale to convert. Pass the snapshot the point was chosen
+    # from to refuse the input when the app's structure changed since.
+
+    def _window(self, pid: int, window_id: int | None) -> Any:
+        """The window to address input to, on a display: an out-of-sight one is brought
+        onto the invisible display first."""
+        app = self._app(pid).backend.app
+        if app.out_of_sight():
+            app.open()
+        windows = app.windows()
+        if window_id is not None:
+            windows = [w for w in windows if w.window_id == window_id]
+        if not windows:
+            app.check_running()
+            raise UnsupportedDesktopAction(f"No window {window_id} of process {pid} on a display")
+        return windows[0]
+
+    def _raw(self, pid: int, snapshot: DesktopSnapshot | None, send: Callable[[], None]) -> ActResult:
+        started = time.perf_counter()
+        if snapshot is not None:
+            refused, _ = self._check(snapshot, started)
+            if refused is not None:
+                return refused
+        app = self._app(pid).backend.app
+        with app.input_scope():
+            send()
+        return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
+
+    def click_at(
+        self, pid: int, x: float, y: float, *, button: str = "left", count: int = 1,
+        modifiers: tuple[str, ...] | list[str] = (), window_id: int | None = None,
+        snapshot: DesktopSnapshot | None = None,
+    ) -> ActResult:
+        """Click at a point in the window: ``button`` "left" or "right", ``count`` up to 3,
+        ``modifiers`` from MOD, SHIFT, ALT, CTRL."""
+        from .backends import macos_background as background
+        from .backends.macos_ax import modifier_flags
+
+        if button not in ("left", "right"):
+            raise UnsupportedDesktopAction(f"Unsupported button {button!r}; use left or right")
+        window = self._window(pid, window_id)
+        point = (window.bounds.x + x, window.bounds.y + y)
+        flags = modifier_flags(tuple(modifiers)) if modifiers else 0
+        return self._raw(pid, snapshot, lambda: background.click(
+            pid, window.window_id, point, count=count, right=button == "right", flags=flags,
+        ))
+
+    def drag(
+        self, pid: int, points: list[tuple[float, float]] | list[list[float]], *, window_id: int | None = None,
+        snapshot: DesktopSnapshot | None = None,
+    ) -> ActResult:
+        """Press at the first point, move through the rest and release at the last."""
+        from .backends import macos_background as background
+
+        window = self._window(pid, window_id)
+        path = [(window.bounds.x + float(px), window.bounds.y + float(py)) for px, py in points]
+        return self._raw(pid, snapshot, lambda: background.drag_path(pid, window.window_id, path))
+
+    def scroll_at(
+        self, pid: int, x: float, y: float, *, dx: float = 0, dy: float = 0, window_id: int | None = None,
+        snapshot: DesktopSnapshot | None = None,
+    ) -> ActResult:
+        """Scroll the content under a point by ``dx``/``dy`` points; positive ``dy``
+        moves the content down (shows what is above), as a scroll wheel turned up does."""
+        from .backends import macos_background as background
+
+        window = self._window(pid, window_id)
+        point = (window.bounds.x + x, window.bounds.y + y)
+        return self._raw(pid, snapshot, lambda: background.scroll(
+            pid, window.window_id, point, dx=round(dx), dy=round(dy),
+        ))
+
+    def press(self, pid: int, keys: str, *, snapshot: DesktopSnapshot | None = None) -> ActResult:
+        """Press one key (ENTER, TAB, ARROW_DOWN...) or a chord (MOD+S) in the app's key window."""
+        from .backends.macos_ax import _press_hotkey, _press_key
+
+        self._window(pid, None)
+        app = self._app(pid).backend.app
+        send = (lambda: _press_hotkey(app, keys)) if "+" in keys else (lambda: _press_key(app, keys))
+        return self._raw(pid, snapshot, send)
+
+    def type_text(self, pid: int, text: str, *, snapshot: DesktopSnapshot | None = None) -> ActResult:
+        """Type text as key events into whatever has key focus in the app."""
+        self._window(pid, None)
+        app = self._app(pid).backend.app
+        return self._raw(pid, snapshot, lambda: app.type_text(text))
+
+    def screenshot(self, pid: int, *, window_id: int | None = None, max_side: int = 1568) -> Screenshot:
+        """PNG of the app's window. ``scale`` is image pixels per window point: divide
+        a pixel position by it to get the point to pass to ``click_at``."""
+        from .backends.macos_ocr import _capture_window, _frameworks, png_image
+
+        window = self._window(pid, window_id)
+        quartz = _frameworks()[0]
+        image = _capture_window(quartz, window.window_id)
+        if image is None:
+            raise UnsupportedDesktopAction("The window could not be captured; is Screen Recording allowed?")
+        png = png_image(image, max_side=max_side)
+        width = quartz.CGImageGetWidth(image)
+        height = quartz.CGImageGetHeight(image)
+        shrink = min(1.0, max_side / max(width, height, 1))
+        return Screenshot(
+            png=png,
+            width=max(1, round(width * shrink)),
+            height=max(1, round(height * shrink)),
+            scale=width * shrink / max(window.bounds.width, 1),
+            window_id=window.window_id,
+            title=window.title,
+        )
 
 def _action(
     snapshot: DesktopSnapshot,

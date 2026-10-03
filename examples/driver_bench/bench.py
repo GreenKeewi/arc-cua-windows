@@ -377,9 +377,7 @@ class ArcMCPDriver:
         return len(content.get("windows", []))
 
     def observe(self, pid: int, screenshot: bool = False) -> Observation:
-        if screenshot:
-            raise LookupError("arc (MCP): screenshots are not served yet")
-        content, size, _ = self.client.call("observe", pid=pid)
+        content, size, _ = self.client.call("observe", pid=pid, screenshot=screenshot)
         return Observation(len(content.get("elements", [])), size, content, str(content.get("window", "")))
 
     def find(self, observation: Observation, role: str, name: str) -> Any:
