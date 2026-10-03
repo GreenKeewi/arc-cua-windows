@@ -314,8 +314,11 @@ class MacOSAXBackend:
             _press_hotkey(self.app, action.hotkey or "", window)
             return
         if action.kind == ActionKind.SCROLL:
+            direction = action.scroll_direction or "DOWN"
+            if self._scroll_by_bar(AS, direction):
+                return
             self._ensure_input_window(window)
-            self.app.scroll(action.scroll_direction or "DOWN", window_id=window)
+            self.app.scroll(direction, window_id=window)
             return
 
         if not action.target_id:
@@ -646,6 +649,45 @@ class MacOSAXBackend:
             source="macos_ax",
             metadata=metadata,
         )
+
+    def _scroll_by_bar(self, AS: Any, direction: str) -> bool:
+        """Scroll the window's largest scrollable area by most of a page by moving its
+        scroll bar, through accessibility. It works where scroll events posted to a
+        background app are ignored (web views), and needs no window on a display.
+        False when no area can scroll that way."""
+        vertical = direction in ("UP", "DOWN")
+        name = "AXVerticalScrollBar" if vertical else "AXHorizontalScrollBar"
+        areas = []
+        for ref in getattr(self, "_refs", {}).values():
+            if _attr(AS, ref, "AXRole") != "AXScrollArea":
+                continue
+            bar = _attr(AS, ref, name)
+            bounds = _ax_bounds(AS, ref)
+            if bar is None or bounds is None:
+                continue
+            error, settable = AS.AXUIElementIsAttributeSettable(bar, "AXValue", None)
+            if error == 0 and settable:
+                areas.append((bounds.width * bounds.height, ref, bar, bounds))
+        if not areas:
+            return False
+        _, area, bar, bounds = max(areas, key=lambda entry: entry[0])
+        position = _number(_attr(AS, bar, "AXValue"))
+        if position is None:
+            return False
+        viewport = bounds.height if vertical else bounds.width
+        content = max(
+            ((b.height if vertical else b.width) for child in (_attr(AS, area, "AXChildren") or ())
+             if (b := _ax_bounds(AS, child)) is not None),
+            default=0.0,
+        )
+        if content <= viewport:
+            return False
+        step = 0.85 * viewport / (content - viewport)  # Most of a page, in scroll-bar units (0..1).
+        forward = direction in ("DOWN", "RIGHT")
+        target = min(1.0, max(0.0, position + step if forward else position - step))
+        if target == position:
+            return True  # Already at that end.
+        return AS.AXUIElementSetAttributeValue(bar, "AXValue", target) == 0
 
     def _type_into_web_field(self, AS: Any, ref: Any, text: str, window: int | None) -> None:
         """Replace a web field's text by typing. A page sees only typing: writing the

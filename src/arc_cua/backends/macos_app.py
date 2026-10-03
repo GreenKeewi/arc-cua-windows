@@ -262,6 +262,10 @@ class MacOSApp:
             background.scroll(self.pid, window.window_id, window.bounds.center, dx=dx, dy=dy)
 
     def scroll_at(self, point: tuple[float, float], *, dx: int, dy: int, window_id: int | None = None) -> None:
+        """Scroll the content under a screen point: by moving the scroll bars of the
+        scroll area there, through accessibility, else with scroll events."""
+        if scroll_area_by_bars(self.ax, point, dx=dx, dy=dy):
+            return
         window = self._input_window(window_id, point)
         with self.input_scope():
             background.scroll(self.pid, window.window_id, point, dx=dx, dy=dy)
@@ -337,6 +341,36 @@ class _InputScope:
     def __exit__(self, *exc: Any) -> None:
         self.app._last_input = time.monotonic()
         self.app.keep_behind()
+
+
+def scroll_area_by_bars(app_ax: Any, point: tuple[float, float], *, dx: float, dy: float) -> bool:
+    """Scroll the scroll area under ``point`` by ``dx``/``dy`` points (positive ``dy``
+    shows what is above) by setting its scroll bars. False when there is none to set."""
+    import ApplicationServices as AS  # type: ignore
+
+    error, element = AS.AXUIElementCopyElementAtPosition(app_ax, float(point[0]), float(point[1]), None)
+    while error == 0 and element is not None and _attr(element, "AXRole") != "AXScrollArea":
+        element = _attr(element, "AXParent")
+    if element is None or error != 0:
+        return False
+    frame = _ax_frame(element)
+    content = [_ax_frame(child) for child in (_attr(element, "AXChildren") or ())]
+    content = [c for c in content if c is not None]
+    if frame is None or not content:
+        return False
+    moved = False
+    for delta, name, viewport, extent in (
+        (dy, "AXVerticalScrollBar", frame.height, max(c.height for c in content)),
+        (dx, "AXHorizontalScrollBar", frame.width, max(c.width for c in content)),
+    ):
+        bar = _attr(element, name)
+        position = _attr(bar, "AXValue") if bar is not None else None
+        if not delta or bar is None or position is None or extent <= viewport:
+            continue
+        # Scroll-bar values run 0..1 over the scrollable distance; positive deltas move up/left.
+        target = min(1.0, max(0.0, float(position) - delta / (extent - viewport)))
+        moved = AS.AXUIElementSetAttributeValue(bar, "AXValue", target) == 0 or moved
+    return moved
 
 
 def _contains(bounds: Bounds, point: tuple[float, float]) -> bool:

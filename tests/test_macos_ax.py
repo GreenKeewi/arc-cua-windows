@@ -733,3 +733,33 @@ def test_a_web_date_is_set_part_by_part(monkeypatch):
     assert [p.value for p in parts] == [12, 25, 2024]
     with pytest.raises(UnsupportedDesktopAction, match="not a date"):
         backend._set_web_date(api, "date", "next week")
+
+
+def test_scroll_moves_the_largest_scroll_area_by_most_of_a_page(monkeypatch):
+    class Bar:
+        def __init__(self, value):
+            self.value = value
+
+    small_bar, big_bar = Bar(0.0), Bar(0.2)
+    small = Ref("small", AXRole="AXScrollArea", AXVerticalScrollBar=small_bar, frame=Bounds(0, 0, 100, 100),
+                AXChildren=[Ref("c1", frame=Bounds(0, 0, 100, 400))])
+    big = Ref("big", AXRole="AXScrollArea", AXVerticalScrollBar=big_bar, frame=Bounds(0, 0, 500, 500),
+              AXChildren=[Ref("c2", frame=Bounds(0, 0, 500, 1500))])
+    writes = []
+    api = SimpleNamespace(
+        AXUIElementIsAttributeSettable=lambda ref, name, out: (0, True),
+        AXUIElementSetAttributeValue=lambda ref, name, value: writes.append((ref, value)) or 0,
+    )
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: (
+        ref.value if isinstance(ref, Bar) and name == "AXValue" else getattr(ref, "attributes", {}).get(name)
+    ))
+    monkeypatch.setattr(macos_ax, "_ax_bounds", lambda api, ref: ref.attributes.get("frame"))
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._refs = {"a": small, "b": big}
+
+    assert backend._scroll_by_bar(api, "DOWN")
+    # 85% of a 500-point view over 1,000 scrollable points, from 0.2.
+    assert writes == [(big_bar, pytest.approx(0.2 + 0.85 * 500 / 1000))]
+    big_bar.value = 0.0
+    assert backend._scroll_by_bar(api, "UP") and len(writes) == 1  # Already at the top: nothing to set.
+    assert not backend._scroll_by_bar(api, "LEFT")  # No horizontal scroll bars.
