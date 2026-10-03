@@ -834,3 +834,12 @@ def test_text_in_a_document_view_is_typed_not_written(monkeypatch):
     backend.execute(snapshot, ExecutableAction(kind=ActionKind.TYPE_TEXT, target_id="doc", value="new text"))
     assert typed == ["new text"]
     assert ("AXValue", "new text") not in writes
+
+
+def test_a_focused_sheet_resolves_to_the_window_it_is_attached_to(monkeypatch):
+    window = Ref("form", AXRole="AXWindow", AXTitle="Form")
+    sheet = Ref("sheet", AXRole="AXSheet", AXParent=window)
+    app = Ref("app", AXFocusedWindow=sheet, AXMainWindow=window, AXWindows=[window])
+    backend = _window_backend(monkeypatch, app, {1: window})
+    assert backend.resolve_window() == 1
+    assert backend.observe().context["window_id"] == 1

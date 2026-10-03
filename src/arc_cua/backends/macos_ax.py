@@ -161,6 +161,7 @@ class MacOSAXBackend:
                 ]
                 # The focused window can be on another desktop; observe one the app shows here.
                 for candidate in candidates:
+                    candidate = _owning_window(AS, candidate)
                     if candidate is None:
                         continue
                     identifier = identify_ax_window(candidate, self.app.pid, shown)
@@ -883,6 +884,16 @@ def _wait_for_menu_to_close(AS: Any, item: Any, timeout_s: float = 1.0) -> None:
             time.sleep(_MENU_COMMIT_S)  # The choice lands just after the flash.
             return
         time.sleep(0.005)
+
+
+def _owning_window(AS: Any, element: Any) -> Any:
+    """The window an element belongs to. While a sheet is open the app reports the
+    sheet as its focused window; the window to observe is the one it is attached to."""
+    for _ in range(4):
+        if element is None or _attr(AS, element, "AXRole") not in ("AXSheet", "AXDrawer"):
+            return element
+        element = _attr(AS, element, "AXParent")
+    return element
 
 
 def _date_parts_by_name(AS: Any, parts: list[Any]) -> dict[str, Any] | None:
