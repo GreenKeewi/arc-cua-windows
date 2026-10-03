@@ -68,12 +68,13 @@ class MacOSApp:
         if not _alive(self.pid):
             raise TargetUnavailable(f"{self.name} (process ID {self.pid}) quit.")
 
-    def open(self, *, wait_s: float = 2.0) -> None:
+    def open(self, *, wait_s: float = 2.0, park: bool = True) -> None:
         """Make sure there is a window to work in.
 
         Waits briefly for a window that is still opening, then brings a minimized
         window, or a hidden app's windows, onto an invisible display. ``close()``
-        puts them back.
+        puts them back. With ``park=False`` the windows stay out of sight; call
+        ``open()`` again when input events or pixels need a window on a display.
         """
         background.ensure_available()
         self.check_running()
@@ -81,8 +82,12 @@ class MacOSApp:
             return
         if not wait_until(lambda: bool(self.windows()) or self._parking.needed(), wait_s):
             raise TargetUnavailable(self._no_window_reason())
-        if not self.windows():
+        if park and not self.windows():
             self._parking.park()
+
+    def out_of_sight(self) -> bool:
+        """True when the app has no window on screen but a minimized one, or is hidden."""
+        return not self.windows() and self._parking.needed()
 
     def close(self) -> None:
         """Undo ``open()``: minimize or hide parked windows again and move them back."""

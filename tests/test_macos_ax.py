@@ -23,7 +23,7 @@ def fake_app(**attributes):
     """Stands in for MacOSApp: a running app with one on-screen window."""
     defaults = dict(
         pid=123, name="Editor", check_running=lambda: None, input_scope=nullcontext,
-        windows=lambda: [SimpleNamespace(window_id=1)],
+        windows=lambda: [SimpleNamespace(window_id=1)], out_of_sight=lambda: False,
     )
     return SimpleNamespace(**{**defaults, **attributes})
 
@@ -558,3 +558,39 @@ def test_containers_are_not_offered_set_value(monkeypatch, role, offered):
     element = backend._element_from_ref(Ref("x"), "ax_1", parent_id=None, attributes=attributes)
     actions = element.actions if element is not None else ()
     assert (ActionKind.SET_VALUE in actions) is offered
+
+
+def _out_of_sight_backend(monkeypatch, calls):
+    api = SimpleNamespace(AXUIElementPerformAction=lambda ref, action: calls.append(action) or 0)
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
+    monkeypatch.setattr(macos_ax, "_action_names", lambda *args: {"AXPress"})
+    monkeypatch.setattr(macos_ax, "_press_key", lambda app, key: calls.append(f"key {key}"))
+    state = {"parked": False}
+
+    def open_app():
+        state["parked"] = True
+        calls.append("park")
+
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    backend.app = fake_app(out_of_sight=lambda: not state["parked"], open=open_app)
+    backend._refs = {"target": object()}
+    backend.is_fresh = lambda *args: True
+    return backend
+
+
+def test_accessibility_actions_leave_an_out_of_sight_window_where_it_is(monkeypatch):
+    calls = []
+    backend = _out_of_sight_backend(monkeypatch, calls)
+    snapshot = DesktopSnapshot(application="Form", window="Form", revision="1", elements=())
+    backend.execute(snapshot, ExecutableAction(kind=ActionKind.CLICK, target_id="target"))
+    assert calls == ["AXPress"]
+
+
+def test_input_events_bring_an_out_of_sight_window_onto_the_display_first(monkeypatch):
+    calls = []
+    backend = _out_of_sight_backend(monkeypatch, calls)
+    snapshot = DesktopSnapshot(application="Form", window="Form", revision="1", elements=())
+    backend.execute(snapshot, ExecutableAction(kind=ActionKind.PRESS_KEY, key="TAB"))
+    backend.execute(snapshot, ExecutableAction(kind=ActionKind.PRESS_KEY, key="TAB"))
+    assert calls == ["park", "key TAB", "key TAB"]

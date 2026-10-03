@@ -257,9 +257,12 @@ with MacOSHybridBackend(pid) as backend:
   them, since menu key equivalents only reach the front app. `MOD+A` in a text
   field selects its text through accessibility.
 - **Hidden and minimized windows.** Used as a context manager (or with `open()` and
-  `close()`), the backend moves a minimized window, or a hidden app's windows, onto
-  an invisible display where the app still renders them and takes input. On exit
-  they are minimized or hidden again and moved back.
+  `close()`), `MacOSAXBackend` reads a minimized window or a hidden app as it is and
+  presses and sets its controls through accessibility, so the window stays where it
+  is. An action that needs input events (keys, scrolling, pointer clicks) first moves
+  the window onto an invisible display where the app renders it and takes input; on
+  exit it is minimized or hidden again and moved back. `MacOSHybridBackend` needs
+  pixels for OCR, so it moves the window when it opens.
 - **If the app activates itself** after an input, which some controls do, the
   user's app is brought back to the front.
 - **Clear failures.** Once the app quits, or has no usable window (closed, or on

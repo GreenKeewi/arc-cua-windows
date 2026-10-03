@@ -601,9 +601,11 @@ Both macOS backends act on one app, given by process ID, whether or not it is
 frontmost. Input is delivered in the background: events are addressed to the app's
 window, so the user's pointer does not move, the window is not raised and the front
 app does not change. Command chords run through the app's menu when an enabled
-item has them. As a context manager (or `open()`/`close()`), the backend moves a
-minimized window or a hidden app's windows onto an invisible display for the run,
-then puts them back. When the app quits or has no usable window (closed, or on
+item has them. As a context manager (or `open()`/`close()`), MacOSAXBackend reads a
+minimized window or hidden app in place and presses/sets its controls through
+accessibility; actions that need input events (keys, scrolling, pointer clicks)
+first move the window onto an invisible display, and close() puts it back.
+MacOSHybridBackend moves it on open(), since OCR needs pixels. When the app quits or has no usable window (closed, or on
 another desktop), observe/is_fresh/execute raise TargetUnavailable.
 
 `MacOSApp(pid)` / `MacOSApp.from_bundle_id(bundle_id)` resolve the target app;

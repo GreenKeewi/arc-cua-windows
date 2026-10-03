@@ -72,8 +72,13 @@ class MacOSAXBackend:
         return self.app.pid
 
     def open(self) -> None:
-        """Make sure the app has a window to work in; see ``MacOSApp.open``."""
-        self.app.open()
+        """Make sure the app has a window to work in; see ``MacOSApp.open``.
+
+        A minimized window or a hidden app stays out of sight: its accessibility tree
+        can be read and its controls pressed and set as they are. Only actions that
+        need input events (keys, scrolling, pointer clicks) bring it onto the
+        invisible display first."""
+        self.app.open(park=False)
 
     def close(self) -> None:
         if self._cache is not None:
@@ -125,6 +130,14 @@ class MacOSAXBackend:
                 ]
                 # The focused window can be on another desktop; observe one the app shows here.
                 root = next((w for w in candidates if w is not None and window_id(w) in on_screen), None)
+            elif self.app.out_of_sight():
+                # Minimized or hidden: the tree is readable and its controls work as they are.
+                app_ref = self.app.ax
+                self._request_full_tree(AS, app_ref)
+                windows = [w for w in (_attr(AS, app_ref, "AXWindows") or ()) if w is not None]
+                # A hidden app's open windows before its minimized ones.
+                windows.sort(key=lambda w: _attr(AS, w, "AXMinimized") is True)
+                root = windows[0] if windows else None
             if root is not None:
                 break
             if time.monotonic() >= deadline:
@@ -225,12 +238,15 @@ class MacOSAXBackend:
     def _execute(self, action: ExecutableAction) -> None:
         AS, _ = _frameworks()
         if action.kind == ActionKind.PRESS_KEY:
+            self._ensure_input_window()
             _press_key(self.app, action.key or "")
             return
         if action.kind == ActionKind.HOTKEY:
+            self._ensure_input_window()
             _press_hotkey(self.app, action.hotkey or "")
             return
         if action.kind == ActionKind.SCROLL:
+            self._ensure_input_window()
             self.app.scroll(action.scroll_direction or "DOWN")
             return
 
@@ -243,6 +259,7 @@ class MacOSAXBackend:
         if action.kind == ActionKind.CLICK:
             if action.click_modifier:
                 # AXPress ignores modifiers; a modified click must be a real mouse event.
+                self._ensure_input_window()
                 bounds = _ax_bounds(AS, ref)
                 if bounds is None:
                     raise UnsupportedDesktopAction("Modified click requires resolvable screen position")
@@ -254,6 +271,7 @@ class MacOSAXBackend:
                 if error != 0:
                     raise UnsupportedDesktopAction(f"AX action AXPress failed with error {error}")
                 return
+            self._ensure_input_window()
             bounds = _ax_bounds(AS, ref)
             if bounds is None:
                 raise UnsupportedDesktopAction("Click requires AXPress or resolvable screen position")
@@ -261,6 +279,7 @@ class MacOSAXBackend:
             return
 
         if action.kind in {ActionKind.DOUBLE_CLICK, ActionKind.RIGHT_CLICK}:
+            self._ensure_input_window()
             bounds = _ax_bounds(AS, ref)
             if bounds is None:
                 raise UnsupportedDesktopAction(f"{action.kind.value} requires resolvable screen position")
@@ -524,6 +543,12 @@ class MacOSAXBackend:
             source="macos_ax",
             metadata=metadata,
         )
+
+    def _ensure_input_window(self) -> None:
+        """Input events need a window on a display: bring an out-of-sight one onto the
+        invisible display first. Its position changes, so read bounds after this."""
+        if self.app.out_of_sight():
+            self.app.open()
 
     def _click_at(self, bounds: Bounds, *, count: int, button: str, flags: int = 0) -> None:
         self.app.click(bounds, count=count, right=button == "right", flags=flags)
