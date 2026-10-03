@@ -37,7 +37,7 @@ _MAX_DEPTH = 6
 class MenuCommand:
     path: tuple[str, ...]  # ("File", "Export", "PDF…")
     shortcut: str | None  # In arc-cua chord syntax, such as "MOD+SHIFT+S".
-    enabled: bool
+    enabled: bool  # As last validated by the app; can be stale until its menu opens.
     checked: bool
 
     def compact(self) -> dict[str, Any]:
@@ -70,15 +70,18 @@ def read_commands(pid: int, *, query: str | None = None, include_apple_menu: boo
 def run_command(pid: int, path: tuple[str, ...] | list[str] | str) -> None:
     """Run the menu command at ``path`` (a tuple, or a string joined with " > "),
     found in the menu as it is now. Raises UnsupportedDesktopAction when there is no
-    such command or it is not available."""
+    such command.
+
+    It is pressed even when it reads as disabled: AppKit updates an item's enabled
+    state only when its menu is about to open, so a menu that was never opened can
+    report an available command as disabled. Pressing one that really is disabled
+    does nothing."""
     if isinstance(path, str):
         path = tuple(part.strip() for part in path.split(">"))
     wanted = tuple(path)
     for found, attributes, element in _items(pid, include_apple_menu=True):
         if found != wanted:
             continue
-        if attributes.get("AXEnabled") is not True:
-            raise UnsupportedDesktopAction(f"Menu command {' > '.join(wanted)!r} is not available right now")
         import ApplicationServices as AS  # type: ignore
 
         error = AS.AXUIElementPerformAction(element, "AXPress")

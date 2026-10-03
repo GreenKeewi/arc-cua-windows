@@ -129,7 +129,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "commands",
         "description": (
-            "The app's menu bar as commands: path, shortcut, and whether each is enabled or checked. "
+            "The app's menu bar as commands: path, shortcut, and whether each is enabled or checked "
+            "('enabled' is as the app last updated it and can lag; run_command presses the item anyway). "
             "query keeps commands whose path contains it."
         ),
         "inputSchema": {

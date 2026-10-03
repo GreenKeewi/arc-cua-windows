@@ -29,3 +29,24 @@ def test_compact_leaves_out_defaults():
     assert command.compact() == {"path": "File > Save", "shortcut": "MOD+S"}
     disabled = MenuCommand(("View", "Sidebar"), None, enabled=False, checked=True)
     assert disabled.compact() == {"path": "View > Sidebar", "enabled": False, "checked": True}
+
+
+def test_a_command_reported_disabled_is_still_pressed(monkeypatch):
+    """AppKit updates enabled state only when a menu opens, so it can be stale."""
+    import sys
+    import types
+
+    from arc_cua.backends import macos_menus
+
+    item = object()
+    pressed = []
+    monkeypatch.setattr(macos_menus, "_items", lambda pid, include_apple_menu: iter([
+        (("File", "Save"), {"AXEnabled": False}, item),
+    ]))
+    monkeypatch.setitem(sys.modules, "ApplicationServices", types.SimpleNamespace(
+        AXUIElementPerformAction=lambda element, action: pressed.append((element, action)) or 0,
+    ))
+    macos_menus.run_command(1, "File > Save")
+    assert pressed == [(item, "AXPress")]
+    with pytest.raises(macos_menus.UnsupportedDesktopAction, match="No menu command"):
+        macos_menus.run_command(1, "File > Nope")

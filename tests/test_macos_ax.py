@@ -811,3 +811,26 @@ def test_a_web_date_in_another_language_is_set_by_how_its_parts_step(monkeypatch
     backend, api, keys = _stepping_backend(monkeypatch, [jour, mois, annee])  # Day first, as in French.
     backend._set_web_date(api, "date", "2024-02-29")
     assert (annee.value, mois.value, jour.value) == (2024, 2, 29)
+
+
+def test_text_in_a_document_view_is_typed_not_written(monkeypatch):
+    """A document's text view takes an AXValue write without recording an edit."""
+    typed, writes = [], []
+    api = SimpleNamespace(
+        AXUIElementIsAttributeSettable=lambda ref, name, out: (0, True),
+        AXUIElementSetAttributeValue=lambda ref, name, value: writes.append((name, value)) or 0,
+    )
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: {"AXRole": "AXTextArea", "AXValue": "old"}.get(name))
+    monkeypatch.setattr(macos_ax, "_is_text_editor", lambda api, ref: True)
+    monkeypatch.setattr(macos_ax.background, "select_all", lambda ref: True)
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    backend.app = fake_app(on_display=lambda wid: True, type_text=lambda text, window_id=None: typed.append(text))
+    backend._refs = {"doc": object()}
+    backend.is_fresh = lambda *args: True
+    snapshot = DesktopSnapshot(application="Editor", window="notes.txt", revision="1", elements=(),
+                               context={"pid": 123, "window_id": 4})
+    backend.execute(snapshot, ExecutableAction(kind=ActionKind.TYPE_TEXT, target_id="doc", value="new text"))
+    assert typed == ["new text"]
+    assert ("AXValue", "new text") not in writes

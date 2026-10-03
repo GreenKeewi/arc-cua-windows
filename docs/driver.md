@@ -131,6 +131,8 @@ changes after that snapshot, or after `timeout_s` (default 1 s).
 ```
 
 `run_command(pid, "File > New Folder")` runs one with the app in the background.
+`enabled` is as the app last updated it, which can lag until the menu is opened, so
+`run_command` presses the item either way.
 A full menu bar reads in tens of milliseconds. The system's Apple menu is left out.
 
 ### Minimized windows and hidden apps

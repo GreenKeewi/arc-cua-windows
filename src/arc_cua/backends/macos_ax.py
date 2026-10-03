@@ -367,15 +367,14 @@ class MacOSAXBackend:
             )
             return
 
-        if (
-            action.kind in {ActionKind.TYPE_TEXT, ActionKind.SET_VALUE}
-            and action.target_id in getattr(self, "_web_ids", ())
-            and _attr(AS, ref, "AXRole") in _TEXT_ROLES
-        ):
-            if action.value is None:
-                raise UnsupportedDesktopAction(f"{action.kind.value} requires an agent-supplied value")
-            self._type_into_web_field(AS, ref, str(action.value), window)
-            return
+        if action.kind in {ActionKind.TYPE_TEXT, ActionKind.SET_VALUE}:
+            role = _attr(AS, ref, "AXRole")
+            in_web = action.target_id in getattr(self, "_web_ids", ())
+            if (in_web and role in _TEXT_ROLES) or (role == "AXTextArea" and _is_text_editor(AS, ref)):
+                if action.value is None:
+                    raise UnsupportedDesktopAction(f"{action.kind.value} requires an agent-supplied value")
+                self._type_into_field(AS, ref, str(action.value), window)
+                return
         if action.kind == ActionKind.SET_VALUE and action.target_id in getattr(self, "_web_ids", ()):
             role = _attr(AS, ref, "AXRole")
             if role == "AXDateTimeArea":
@@ -692,9 +691,11 @@ class MacOSAXBackend:
             return True  # Already at that end.
         return AS.AXUIElementSetAttributeValue(bar, "AXValue", target) == 0
 
-    def _type_into_web_field(self, AS: Any, ref: Any, text: str, window: int | None) -> None:
-        """Replace a web field's text by typing. A page sees only typing: writing the
-        field's AXValue changes what it shows without firing the page's input events."""
+    def _type_into_field(self, AS: Any, ref: Any, text: str, window: int | None) -> None:
+        """Replace a field's text by typing. A web page sees only typing: writing the
+        field's AXValue changes what it shows without firing the page's input events.
+        A document's text view likewise takes an AXValue write without recording an
+        edit, so the document is not marked changed and Save does not save it."""
         self._ensure_input_window(window)
         AS.AXUIElementSetAttributeValue(ref, "AXFocused", True)
         had_text = bool(_attr(AS, ref, "AXValue"))
