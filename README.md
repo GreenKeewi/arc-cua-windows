@@ -1,6 +1,6 @@
 # arc-cua
 
-**Superfast action layer for computer-use agents, powered by decision models.**
+**A background macOS driver, and a superfast action layer for computer-use agents powered by decision models.**
 
 > Built by [Isle](https://tryisle.com) — managed desktop environments for computer-use agents.
 
@@ -23,6 +23,24 @@ result = execute_payload(executor, {
 ```
 
 Any GPT, Claude, Gemini, local model, or deterministic planner can generate that payload. The planner deliberately lives outside the package.
+
+---
+
+## Two layers: use either
+
+- **A macOS driver.** It reads an app's window, runs its menu commands and acts on
+  its controls in the background, so the user's pointer, front app and windows
+  stay as they are. It checks each action against the app as it is when the action
+  runs, and works in minimized windows and hidden apps. Use it on its own, with no
+  decision model: from any MCP client with `arc-cua mcp`, or from Python with
+  `arc_cua.Driver`. See **[docs/driver.md](docs/driver.md)**.
+- **An action layer** on top of it: hand a bounded subtask to a fast decision
+  model, which runs the UI loop and returns when the subtask is done. The rest of
+  this README is about this layer.
+
+```bash
+claude mcp add arc-cua -- arc-cua mcp   # the driver as MCP tools in Claude Code
+```
 
 ---
 
@@ -437,7 +455,9 @@ pip install -e '.[macos]'    # macOS desktop apps
 pip install -e '.[browser]'  # Chrome
 ```
 
-Set your TypeSafe key:
+To use only the driver, that is all: run `arc-cua mcp` from your MCP client, or
+use `arc_cua.Driver` (see [docs/driver.md](docs/driver.md)). For the action layer,
+set your TypeSafe key:
 
 ```bash
 export TYPESAFE_API_KEY=...

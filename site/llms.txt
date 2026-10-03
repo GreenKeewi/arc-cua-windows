@@ -1,6 +1,6 @@
 # arc-cua
 
-> Superfast action layer for computer-use agents, powered by decision models.
+> A background macOS driver, and a superfast action layer for computer-use agents powered by decision models.
 
 arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model (JEV) that executes the UI loop. No frontier model needed for every click. Built by Isle.
 
@@ -11,6 +11,7 @@ arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast 
 - JEV (Judge-Evaluate-Verify): Fast decision backend by TypeSafe. Given structured desktop state, it selects the next UI operation from a dynamically built action space.
 - Hybrid perception: macOS Accessibility (AX) for semantic controls + Apple Vision OCR for visible text. Both normalize into DesktopElements.
 - Background control: the macOS backends act on one app by process ID, without moving the user's pointer, raising the window or changing the front app.
+- Driver: arc_cua.Driver, or `arc-cua mcp` as MCP tools, reads and controls macOS apps in the background with no decision model: observe, act (refused with a fresh snapshot when the app changed since the observation), wait, menu commands, screenshots and raw input at window points. Works in minimized windows and hidden apps.
 - Command line: `arc-cua run` reads one JSON request (app, subtask, provider) from stdin, prints one JSON line per action and a final result line, and exits.
 - Freshness guards: SHA-256 fingerprints on element state prevent stale execution. A mutation is never applied against an outdated target.
 - Post-action settling: After a mutating action, the runtime re-observes the desktop until structurally stable.

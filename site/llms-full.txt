@@ -1,8 +1,8 @@
 # arc-cua — Full Reference
 
-> Superfast action layer for computer-use agents, powered by decision models.
+> A background macOS driver, and a superfast action layer for computer-use agents powered by decision models.
 
-arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model (JEV) that executes the UI loop. The planner owns intent (what to do, what text to use, what counts as success). The executor owns observation, fast decision-making, freshness checks, native UI execution, and bounded termination.
+arc-cua has two layers. The driver (arc_cua.Driver, or `arc-cua mcp` for MCP clients) reads macOS apps' windows, runs their menu commands and acts on their controls in the background, and can be used on its own. On top of it, arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model (JEV) that executes the UI loop. The planner owns intent (what to do, what text to use, what counts as success). The executor owns observation, fast decision-making, freshness checks, native UI execution, and bounded termination.
 
 Source: https://github.com/shhivv/arc-cua
 Built by Isle: https://tryisle.com
@@ -187,7 +187,7 @@ All public types are available from `arc_cua`:
 
 ```python
 from arc_cua import (
-    ActionKind, Bounds, Decision, DesktopElement, DesktopExecutor,
+    ActResult, ActionKind, Bounds, Decision, DesktopElement, DesktopExecutor, Driver,
     DesktopSnapshot, ExecutableAction, ExecutionResult, RuntimeConfig,
     StepEvent, Subtask, TerminalKind, VerifyFn,
     execute_payload, result_to_dict, subtask_from_dict,
@@ -514,7 +514,37 @@ Convenience: `result_to_dict(executor.run(subtask_from_dict(payload)))`.
 
 ---
 
+## Driver
+
+`Driver` (from arc_cua; macOS) observes apps and acts on them in the background with
+no decision model. `arc-cua mcp` serves the same over MCP stdio, with tools apps,
+windows, observe, act, wait, commands, run_command, screenshot, click_at, drag,
+scroll_at, press and type_text. Guide: docs/driver.md.
+
+| Method | Returns / does |
+|---|---|
+| apps() | running apps with a UI: pid, name, bundle_id, frontmost, hidden |
+| windows(pid) | on-screen MacOSWindows (window_id, title, bounds), front to back |
+| observe(pid) | DesktopSnapshot of the front window, or a minimized/hidden one, read in place; on-screen elements only |
+| act(snapshot, kind, target=None, *, value, key, hotkey, scroll_direction, click_modifier) | ActResult |
+| wait(snapshot, *, timeout_s=1.0, quiet_s=0.05) | fresh snapshot once the app's structure changes after snapshot, or at the timeout |
+| commands(pid, *, query=None) | MenuCommand(path, shortcut, enabled, checked) for the menu bar, Apple menu left out |
+| run_command(pid, path) | runs a menu command by path ("File > Export > PDF…" or a tuple); ActResult |
+| screenshot(pid, *, window_id=None, max_side=1568) | Screenshot(png, width, height, scale = pixels per point, window_id, title) |
+| click_at / drag / scroll_at / press / type_text | raw input at points relative to the window's top-left corner; optional snapshot= to refuse on change |
+| release(pid), close() | stop working with an app / all apps; moved windows go back |
+
+ActResult.status is "done", "changed" (the app's structure, its windows, sheets or
+menus, changed since the snapshot; nothing was done) or "stale" (the target
+changed); ActResult.snapshot is then a fresh snapshot. Structural changes come from
+a per-app journal of accessibility notifications; value changes do not count, so
+several actions on one snapshot work. Nothing waits after an action. Minimized
+windows and hidden apps stay out of sight for accessibility actions and menu
+commands; input that needs events moves the window onto an invisible display first.
+
 ## Command line
+
+`arc-cua mcp` serves the driver over MCP stdio (see Driver).
 
 `arc-cua run` (also `python -m arc_cua run`) executes one subtask against one macOS
 app and exits. Standard input: one JSON object.
