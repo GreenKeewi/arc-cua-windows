@@ -139,7 +139,26 @@ class Driver:
                 last = app.journal.sequence
         return self.observe(pid)
 
+    @staticmethod
+    def commands(pid: int, *, query: str | None = None) -> list[Any]:
+        """The app's menu bar as commands (path, shortcut, enabled, checked), read
+        as it is now; ``query`` keeps commands whose path contains it."""
+        from .backends.macos_menus import read_commands
+
+        return read_commands(pid, query=query)
+
     # ---- acting ----------------------------------------------------------------
+
+    def run_command(self, pid: int, path: tuple[str, ...] | list[str] | str) -> ActResult:
+        """Run a menu command by path, such as ``"File > Export > PDF…"``. The menu is
+        read when the command runs, so there is no snapshot to go stale."""
+        from .backends.macos_menus import run_command
+
+        started = time.perf_counter()
+        app = self._app(pid)
+        with app.backend.app.input_scope():
+            run_command(pid, path)
+        return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
 
     def act(
         self,
