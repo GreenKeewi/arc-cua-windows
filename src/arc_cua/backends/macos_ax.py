@@ -13,9 +13,9 @@ from typing import Any
 from ..errors import StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
 from ..keyboard import parse_hotkey
 from ..models import ActionKind, Bounds, DesktopElement, DesktopSnapshot, ExecutableAction
-from .macos_app import MacOSApp
+from .macos_app import MacOSApp, identify_ax_window, window_server_info
 from .macos_ax_cache import AXChangeFeed, AXNode, AXNodeCache
-from .macos_background import window_id
+from .macos_background import window_id as ax_window_id
 from .macos_events import AXEventMonitor
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,12 @@ class MacOSAXBackend:
     perception source that can later be merged into the same DesktopSnapshot.
     """
 
-    def __init__(self, pid: int, *, max_elements: int = 1200, max_depth: int = 18, cache: bool = False) -> None:
+    def __init__(
+        self, pid: int, *, max_elements: int = 1200, max_depth: int = 18, cache: bool = False,
+        app: MacOSApp | None = None,
+    ) -> None:
+        """``app`` shares one MacOSApp (its window parking) between backends of one app,
+        such as one backend per window."""
         if sys.platform != "darwin":
             raise RuntimeError("MacOSAXBackend is only available on macOS")
         self.max_elements = max_elements
@@ -62,7 +67,7 @@ class MacOSAXBackend:
         self._identities = _AXIdentityRegistry()
         self._full_tree_supported = True
         self._require_accessibility()
-        self.app = MacOSApp(pid)
+        self.app = app if app is not None else MacOSApp(pid)
         # Opt-in: re-read only elements the app reports as changed. See macos_ax_cache.
         self._cache = AXNodeCache(AXChangeFeed(pid)) if cache else None
         self._events: AXEventMonitor | None = None
@@ -109,16 +114,32 @@ class MacOSAXBackend:
     def identity_for(self, ref: Any) -> str:
         return self._identities.id_for(ref)
 
-    def observe(self) -> DesktopSnapshot:
+    def _root(self, wanted: int | None) -> tuple[Any, int, Any]:
+        """The AX window to read, its window-server id, and the app's focused element."""
         AS, _ = _frameworks()
         app_name = self.app.name
         # An app replacing its window (a folder opening, a document switching) briefly
         # shows none; wait for the new one before reporting the app unavailable.
         deadline = time.monotonic() + _WINDOW_WAIT_S
         while True:
-            on_screen = {window.window_id for window in self.app.windows()}
+            shown = self.app.windows()
+            on_screen = {window.window_id for window in shown}
             root = focused = None
-            if on_screen:
+            identifier: int | None = None
+            if wanted is not None:
+                app_ref = self.app.ax
+                self._request_full_tree(AS, app_ref)
+                focused = _attr(AS, app_ref, "AXFocusedUIElement")
+                root = self.app.ax_window(wanted)
+                if root is not None:
+                    identifier = wanted
+                elif window_server_info(wanted) is None:
+                    self.app.check_running()
+                    raise TargetUnavailable(
+                        f"{app_name}'s window {wanted} is gone (closed, or replaced by a new one); "
+                        "find the app's window again."
+                    )
+            elif on_screen:
                 app_ref = self.app.ax
                 self._request_full_tree(AS, app_ref)
                 focused = _attr(AS, app_ref, "AXFocusedUIElement")
@@ -129,7 +150,13 @@ class MacOSAXBackend:
                     *(_attr(AS, app_ref, "AXWindows") or ()),
                 ]
                 # The focused window can be on another desktop; observe one the app shows here.
-                root = next((w for w in candidates if w is not None and window_id(w) in on_screen), None)
+                for candidate in candidates:
+                    if candidate is None:
+                        continue
+                    identifier = identify_ax_window(candidate, self.app.pid, shown)
+                    if identifier in on_screen:
+                        root = candidate
+                        break
             elif self.app.out_of_sight():
                 # Minimized or hidden: the tree is readable and its controls work as they are.
                 app_ref = self.app.ax
@@ -137,20 +164,40 @@ class MacOSAXBackend:
                 windows = [w for w in (_attr(AS, app_ref, "AXWindows") or ()) if w is not None]
                 # A hidden app's open windows before its minimized ones.
                 windows.sort(key=lambda w: _attr(AS, w, "AXMinimized") is True)
-                root = windows[0] if windows else None
-            if root is not None:
-                break
+                for candidate in windows:
+                    identifier = identify_ax_window(candidate, self.app.pid)
+                    if identifier is not None:
+                        root = candidate
+                        break
+            if root is not None and identifier is not None:
+                return root, identifier, focused
             if time.monotonic() >= deadline:
-                if not on_screen:
+                if wanted is None and not on_screen:
                     self.app.require_window()  # Raises TargetUnavailable with the reason.
                 self.app.check_running()
+                if wanted is not None:
+                    raise TargetUnavailable(f"{app_name}'s window {wanted} exposes no accessibility tree.")
                 raise TargetUnavailable(f"{app_name} exposes no on-screen window to accessibility.")
             time.sleep(0.05)
+
+    def resolve_window(self) -> int:
+        """The window an observation without a window id reads: the focused window when
+        it is on screen here, else the main or first one; a minimized window or a hidden
+        app's window when none is on screen."""
+        _, identifier, _ = self._root(None)
+        return identifier
+
+    def observe(self, window_id: int | None = None) -> DesktopSnapshot:
+        """Read one window: ``window_id``, or the one ``resolve_window`` picks. The
+        snapshot's context records the window's id, and actions on the snapshot go to it."""
+        AS, _ = _frameworks()
+        app_name = self.app.name
+        root, identifier, focused = self._root(window_id)
         self._identities.begin_observation()
         pid = self.app.pid
-        focused_window = window_id(_attr(AS, focused, "AXWindow")) if focused is not None else None
-        if focused_window is not None and focused_window not in on_screen:
-            focused = None
+        focused_window = ax_window_id(_attr(AS, focused, "AXWindow")) if focused is not None else None
+        if focused_window is not None and focused_window != identifier:
+            focused = None  # Focus is in another window; this snapshot is of this one.
         window_title = str(_attr(AS, root, "AXTitle") or app_name)
 
         refs: dict[str, Any] = {}
@@ -191,7 +238,7 @@ class MacOSAXBackend:
             window=window_title,
             revision=revision,
             elements=tuple(elements),
-            context={"pid": pid, "backend": "macos_ax"},
+            context={"pid": pid, "backend": "macos_ax", "window_id": identifier},
             captured_at_ms=round(time.time() * 1000),
         )
 
@@ -233,21 +280,22 @@ class MacOSAXBackend:
             return
         # Accessibility actions can activate some apps too; the scope hands the front back.
         with self.app.input_scope():
-            self._execute(action)
+            self._execute(action, snapshot.context.get("window_id"))
 
-    def _execute(self, action: ExecutableAction) -> None:
+    def _execute(self, action: ExecutableAction, window: int | None = None) -> None:
+        """Run one action; input events go to ``window``, the snapshot's window."""
         AS, _ = _frameworks()
         if action.kind == ActionKind.PRESS_KEY:
-            self._ensure_input_window()
-            _press_key(self.app, action.key or "")
+            self._ensure_input_window(window)
+            _press_key(self.app, action.key or "", window)
             return
         if action.kind == ActionKind.HOTKEY:
-            self._ensure_input_window()
-            _press_hotkey(self.app, action.hotkey or "")
+            self._ensure_input_window(window)
+            _press_hotkey(self.app, action.hotkey or "", window)
             return
         if action.kind == ActionKind.SCROLL:
-            self._ensure_input_window()
-            self.app.scroll(action.scroll_direction or "DOWN")
+            self._ensure_input_window(window)
+            self.app.scroll(action.scroll_direction or "DOWN", window_id=window)
             return
 
         if not action.target_id:
@@ -259,11 +307,13 @@ class MacOSAXBackend:
         if action.kind == ActionKind.CLICK:
             if action.click_modifier:
                 # AXPress ignores modifiers; a modified click must be a real mouse event.
-                self._ensure_input_window()
+                self._ensure_input_window(window)
                 bounds = _ax_bounds(AS, ref)
                 if bounds is None:
                     raise UnsupportedDesktopAction("Modified click requires resolvable screen position")
-                self._click_at(bounds, count=1, button="left", flags=modifier_flags((action.click_modifier,)))
+                self._click_at(
+                    bounds, count=1, button="left", flags=modifier_flags((action.click_modifier,)), window=window,
+                )
                 return
             actions = _action_names(AS, ref)
             if "AXPress" in actions:
@@ -271,15 +321,15 @@ class MacOSAXBackend:
                 if error != 0:
                     raise UnsupportedDesktopAction(f"AX action AXPress failed with error {error}")
                 return
-            self._ensure_input_window()
+            self._ensure_input_window(window)
             bounds = _ax_bounds(AS, ref)
             if bounds is None:
                 raise UnsupportedDesktopAction("Click requires AXPress or resolvable screen position")
-            self._click_at(bounds, count=1, button="left")
+            self._click_at(bounds, count=1, button="left", window=window)
             return
 
         if action.kind in {ActionKind.DOUBLE_CLICK, ActionKind.RIGHT_CLICK}:
-            self._ensure_input_window()
+            self._ensure_input_window(window)
             bounds = _ax_bounds(AS, ref)
             if bounds is None:
                 raise UnsupportedDesktopAction(f"{action.kind.value} requires resolvable screen position")
@@ -287,6 +337,7 @@ class MacOSAXBackend:
                 bounds,
                 count=2 if action.kind == ActionKind.DOUBLE_CLICK else 1,
                 button="right" if action.kind == ActionKind.RIGHT_CLICK else "left",
+                window=window,
             )
             return
 
@@ -544,14 +595,17 @@ class MacOSAXBackend:
             metadata=metadata,
         )
 
-    def _ensure_input_window(self) -> None:
+    def _ensure_input_window(self, window: int | None = None) -> None:
         """Input events need a window on a display: bring an out-of-sight one onto the
         invisible display first. Its position changes, so read bounds after this."""
-        if self.app.out_of_sight():
+        if window is not None:
+            if not self.app.on_display(window):
+                self.app.open(window_id=window)
+        elif self.app.out_of_sight():
             self.app.open()
 
-    def _click_at(self, bounds: Bounds, *, count: int, button: str, flags: int = 0) -> None:
-        self.app.click(bounds, count=count, right=button == "right", flags=flags)
+    def _click_at(self, bounds: Bounds, *, count: int, button: str, flags: int = 0, window: int | None = None) -> None:
+        self.app.click(bounds, count=count, right=button == "right", flags=flags, window_id=window)
 
     @staticmethod
     def _require_accessibility() -> None:
@@ -1029,14 +1083,14 @@ _KEYCODES = {
 }
 
 
-def _press_key(app: MacOSApp, key: str) -> None:
+def _press_key(app: MacOSApp, key: str, window: int | None = None) -> None:
     code = _KEYCODES.get(key)
     if code is None:
         raise UnsupportedDesktopAction(f"Unsupported macOS key: {key}")
-    app.press(code)
+    app.press(code, window_id=window)
 
 
-def _press_hotkey(app: MacOSApp, hotkey: str) -> None:
+def _press_hotkey(app: MacOSApp, hotkey: str, window: int | None = None) -> None:
     try:
         modifiers, key = parse_hotkey(hotkey)
     except ValueError as exc:
@@ -1044,7 +1098,7 @@ def _press_hotkey(app: MacOSApp, hotkey: str) -> None:
     code = _KEYCODES.get(key)
     if code is None:
         raise UnsupportedDesktopAction(f"Unsupported macOS hotkey key: {key}")
-    app.shortcut(modifiers, key, code, modifier_flags(modifiers))
+    app.shortcut(modifiers, key, code, modifier_flags(modifiers), window_id=window)
 
 
 def modifier_flags(modifiers) -> int:

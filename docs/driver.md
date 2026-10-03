@@ -42,14 +42,29 @@ with logs on standard error.
 
 ## How it works
 
+### Windows
+
+The driver works on one exact window at a time: a `WindowTarget(pid, window_id)`,
+where `window_id` is the window server's id for it. `windows(pid)` lists an app's
+windows (on screen front to back, then minimized ones and a hidden app's), and any
+of them can be observed and acted on.
+
+You can also pass just a pid. It is resolved **once**, to the app's focused window
+(else its main or first window, else a minimized one), and the snapshot records the
+window it read. From then on everything done with that snapshot goes to that
+window, even if another window of the app takes focus or comes to the front.
+
+A window that is closed, or replaced by a new one, is reported as gone
+(`TargetUnavailable`), never silently swapped for another: target the app again.
+
 ### Snapshots and elements
 
-`observe(pid)` reads the app's front window through accessibility and returns a
-**snapshot**: an id, and the window's elements. Each element has an id, a role, a
-name, a value when it has one, and **the actions it offers**:
+`observe(target)` reads the window through accessibility and returns a
+**snapshot**: an id, the window's id, and its elements. Each element has an id, a
+role, a name, a value when it has one, and **the actions it offers**:
 
 ```json
-{"snapshot": "s4", "application": "Calculator", "window": "Calculator",
+{"snapshot": "s4", "window_id": 18342, "application": "Calculator", "window": "Calculator",
  "elements": [
    {"id": "ax_14", "role": "Button", "name": "7", "actions": ["CLICK"]},
    {"id": "ax_9", "role": "StaticText", "value": "42", "parent": "ax_8"}
@@ -135,16 +150,18 @@ accessibility tree. For those:
 
 | | |
 |---|---|
-| `screenshot(pid)` | PNG of the window. `scale` is image pixels per window point. |
-| `click_at(pid, x, y)` | `button` left or right, `count` up to 3, `modifiers` |
-| `drag(pid, points)` | press at the first point, move through the rest, release at the last |
-| `scroll_at(pid, x, y, dx, dy)` | positive `dy` shows what is above |
-| `press(pid, keys)` | a key or a chord |
-| `type_text(pid, text)` | key events where the app has key focus |
+| `screenshot(target)` | PNG of the window, with any sheet attached to it. `scale` is image pixels per window point. |
+| `click_at(target, x, y)` | `button` left or right, `count` up to 3, `modifiers` |
+| `drag(target, points)` | press at the first point, move through the rest, release at the last |
+| `scroll_at(target, x, y, dx, dy)` | positive `dy` shows what is above |
+| `press(target, keys)` | a key or a chord |
+| `type_text(target, text)` | key events, into the window's focused field |
 
-Points are relative to the window's top-left corner, in points (divide screenshot
-pixels by `scale`). Pass the `snapshot` a point was chosen from, and the input is
-refused when the app's structure changed since, as with `act`.
+`target` is a `WindowTarget` or a pid. Points are relative to the window's top-left
+corner, in points (divide screenshot pixels by `scale`). Input goes to that window
+even when another window covers it; a sheet attached to the window takes its input.
+Pass the `snapshot` a point was chosen from, and the input goes to the snapshot's
+window and is refused when the app's structure changed since, as with `act`.
 
 Prefer elements when they exist: they are faster, they do not depend on where
 things are drawn, and they keep working while the window is out of sight.
@@ -154,13 +171,13 @@ things are drawn, and they keep working while the window is out of sight.
 | Tool | Does |
 |---|---|
 | `apps` | Running apps with a user interface: pid, name, bundle id, frontmost, hidden |
-| `windows` | An app's windows on screen: window id, title, bounds |
-| `observe` | Snapshot of the front window (or a minimized or hidden one); `query` filters elements; `screenshot: true` adds a PNG |
+| `windows` | All of an app's windows: window id, title, bounds, on screen or minimized |
+| `observe` | Snapshot of one window: `window_id`, else the app's focused window (or a minimized or hidden one); `query` filters elements; `screenshot: true` adds a PNG |
 | `act` | One action on an element of a snapshot |
 | `wait` | Fresh snapshot once the structure changes, or after `timeout_s` |
 | `commands` | The menu bar as commands; `query` filters by path |
 | `run_command` | Run a menu command by path |
-| `screenshot`, `click_at`, `drag`, `scroll_at`, `press`, `type_text` | Pixels and raw input at window points |
+| `screenshot`, `click_at`, `drag`, `scroll_at`, `press`, `type_text` | Pixels and raw input at window points; the window is `window_id`, else the `snapshot`'s, else the app's focused one |
 
 Errors come back as tool results with `isError`, such as an expired snapshot
 ("observe again") or an action an element does not offer.
@@ -168,12 +185,13 @@ Errors come back as tool results with `isError`, such as an expired snapshot
 ## Python
 
 ```python
-from arc_cua import Driver
+from arc_cua import Driver, WindowTarget
 from arc_cua.backends import MacOSApp
 
 pid = MacOSApp.from_bundle_id("com.apple.calculator").pid
 with Driver() as driver:
-    snapshot = driver.observe(pid)
+    snapshot = driver.observe(pid)    # resolves the app's window once
+    window = driver.target_of(snapshot)  # WindowTarget(pid, window_id)
     seven = next(e for e in snapshot.elements if e.name == "7")
 
     result = driver.act(snapshot, "CLICK", seven.id)
@@ -184,7 +202,9 @@ with Driver() as driver:
     driver.run_command(pid, "View > Scientific")
 ```
 
-`Driver` keeps one backend per app and puts windows it moved back when it closes.
+`driver.observe(WindowTarget(pid, window_id))` reads a particular window, with ids
+from `driver.windows(pid)`. `Driver` keeps one backend per window, and puts windows
+it moved back when it closes.
 
 ## Measured
 

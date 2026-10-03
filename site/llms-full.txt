@@ -524,19 +524,23 @@ scroll_at, press and type_text. Guide: docs/driver.md.
 | Method | Returns / does |
 |---|---|
 | apps() | running apps with a UI: pid, name, bundle_id, frontmost, hidden |
-| windows(pid) | on-screen MacOSWindows (window_id, title, bounds), front to back |
-| observe(pid) | DesktopSnapshot of the front window, or a minimized/hidden one, read in place; on-screen elements only |
+| target(pid or WindowTarget) | WindowTarget(pid, window_id): a pid resolves once to the focused window (else main/first, else a minimized or hidden one) |
+| target_of(snapshot) | the WindowTarget a snapshot was read from (snapshot.context["window_id"]) |
+| windows(pid) | WindowInfo(window_id, title, bounds, on_screen, minimized) for every window of the app |
+| observe(pid or WindowTarget) | DesktopSnapshot of that exact window, minimized/hidden ones read in place; on-screen elements only |
 | act(snapshot, kind, target=None, *, value, key, hotkey, scroll_direction, click_modifier) | ActResult |
 | wait(snapshot, *, timeout_s=1.0, quiet_s=0.05) | fresh snapshot once the app's structure changes after snapshot, or at the timeout |
 | commands(pid, *, query=None) | MenuCommand(path, shortcut, enabled, checked) for the menu bar, Apple menu left out |
 | run_command(pid, path) | runs a menu command by path ("File > Export > PDF…" or a tuple); ActResult |
-| screenshot(pid, *, window_id=None, max_side=1568) | Screenshot(png, width, height, scale = pixels per point, window_id, title) |
-| click_at / drag / scroll_at / press / type_text | raw input at points relative to the window's top-left corner; optional snapshot= to refuse on change |
+| screenshot(pid or WindowTarget, *, snapshot=None, max_side=1568) | Screenshot(png, width, height, scale = pixels per point, window_id, title), with attached sheets |
+| click_at / drag / scroll_at / press / type_text(pid or WindowTarget, ...) | raw input at points relative to the window's top-left corner, to that window even when covered (an attached sheet takes it); snapshot= sends it to the snapshot's window and refuses on change |
 | release(pid), close() | stop working with an app / all apps; moved windows go back |
 
 ActResult.status is "done", "changed" (the app's structure, its windows, sheets or
 menus, changed since the snapshot; nothing was done) or "stale" (the target
-changed); ActResult.snapshot is then a fresh snapshot. Structural changes come from
+changed); ActResult.snapshot is then a fresh snapshot of the same window. A window
+that was closed or replaced raises TargetUnavailable rather than being swapped for
+another. Structural changes come from
 a per-app journal of accessibility notifications; value changes do not count, so
 several actions on one snapshot work. Nothing waits after an action. Minimized
 windows and hidden apps stay out of sight for accessibility actions and menu

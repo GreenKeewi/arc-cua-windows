@@ -165,10 +165,12 @@ class Invariants:
 # ---- targets -----------------------------------------------------------------------
 
 class Fixture:
-    def __init__(self, rows: int = 0, start: str = "shown") -> None:
+    def __init__(self, rows: int = 0, start: str = "shown", *, second_window: bool = False) -> None:
         self.state_path = OUT / f"form-{rows}-{start}.json"
         self.state_path.unlink(missing_ok=True)
         args = [sys.executable, str(FIXTURE), str(self.state_path), "--start", start]
+        if second_window:
+            args.append("--second-window")
         if rows:
             args += ["--rows", str(rows)]
         self.process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

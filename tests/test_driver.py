@@ -6,11 +6,12 @@ import time
 import pytest
 
 from arc_cua.backends.macos_changes import Change
-from arc_cua.driver import Driver
-from arc_cua.errors import StaleDesktopState, UnsupportedDesktopAction
-from arc_cua.models import ActionKind, DesktopElement, DesktopSnapshot
+from arc_cua.driver import Driver, WindowTarget
+from arc_cua.errors import StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
+from arc_cua.models import ActionKind, Bounds, DesktopElement, DesktopSnapshot
 
 PID = 4242
+A, B = 11, 22  # Two windows of the app.
 
 
 class FakeJournal:
@@ -37,33 +38,95 @@ class FakeJournal:
         pass
 
 
-class FakeBackend:
-    """A form with a Submit button; a sheet can be shown over it."""
+class Desktop:
+    """What the fake app shows: which windows exist, which is focused, a sheet on A."""
 
     def __init__(self) -> None:
+        self.windows = {A: "Form A", B: "Form B"}
+        self.focused = A
         self.sheet = False
-        self.executed: list[tuple[ActionKind, str | None]] = []
-        self.stale = False
+        self.executed: list[tuple[int, ActionKind, str | None]] = []
 
-    def observe(self) -> DesktopSnapshot:
-        elements = [DesktopElement(id="submit", role="Button", name="Submit", actions=(ActionKind.CLICK,))]
-        if self.sheet:
-            elements.append(DesktopElement(id="close", role="Button", name="Close", actions=(ActionKind.CLICK,)))
+
+class FakeBackend:
+    """One window's backend: a Submit button, and Close when a sheet is shown on A."""
+
+    def __init__(self, desktop: Desktop) -> None:
+        self.desktop = desktop
+        self.stale = False
+        self.observed: int | None = None
+
+    def observe(self, window_id: int) -> DesktopSnapshot:
+        if window_id not in self.desktop.windows:
+            raise TargetUnavailable(f"window {window_id} is gone")
+        self.observed = window_id
+        prefix = "a" if window_id == A else "b"
+        elements = [DesktopElement(id=f"{prefix}_submit", role="Button", name="Submit", actions=(ActionKind.CLICK,))]
+        if window_id == A and self.desktop.sheet:
+            elements.append(DesktopElement(id="a_close", role="Button", name="Close", actions=(ActionKind.CLICK,)))
         return DesktopSnapshot(
-            application="Form", window="Form", revision=str(self.sheet), elements=tuple(elements),
-            context={"pid": PID},
+            application="Form", window=self.desktop.windows[window_id], revision=str(self.desktop.sheet),
+            elements=tuple(elements), context={"pid": PID, "window_id": window_id},
         )
 
     def execute(self, snapshot: DesktopSnapshot, action) -> None:
         if self.stale:
             raise StaleDesktopState("target changed")
-        self.executed.append((action.kind, action.target_id))
+        # A backend acts on the elements of its own last observation.
+        assert self.observed == snapshot.context["window_id"]
+        self.desktop.executed.append((snapshot.context["window_id"], action.kind, action.target_id))
+
+
+class FakeMacOSApp:
+    """Records raw input, with the window each input was addressed to."""
+
+    def __init__(self, desktop: Desktop) -> None:
+        self.desktop = desktop
+        self.inputs: list[tuple] = []
+        self.parked: list[int] = []
+
+    def exists(self, window_id: int) -> bool:
+        return window_id in self.desktop.windows
+
+    def on_display(self, window_id: int) -> bool:
+        return window_id in self.desktop.windows
+
+    def open(self, window_id: int | None = None) -> None:
+        self.parked.append(window_id)
+
+    def window(self, window_id: int):
+        if window_id not in self.desktop.windows:
+            raise TargetUnavailable(f"window {window_id} is gone")
+        x = 100 if window_id == A else 500
+        return type("W", (), {"window_id": window_id, "title": self.desktop.windows[window_id],
+                              "bounds": Bounds(x, 50, 300, 200)})()
+
+    def click(self, bounds, *, count=1, right=False, flags=0, window_id=None):
+        self.inputs.append(("click", window_id, bounds.x, bounds.y))
+
+    def type_text(self, text, *, window_id=None):
+        self.inputs.append(("type", window_id, text))
+
+    def input_scope(self):
+        from contextlib import nullcontext
+
+        return nullcontext()
 
 
 class FakeApp:
     def __init__(self, pid: int) -> None:
+        self.desktop = Desktop()
         self.journal = FakeJournal()
-        self.backend = FakeBackend()
+        self.app = FakeMacOSApp(self.desktop)
+        self.backends: dict[int, FakeBackend] = {}
+        self.resolved = 0
+
+    def resolve_window(self) -> int:
+        self.resolved += 1
+        return self.desktop.focused
+
+    def backend(self, window_id: int) -> FakeBackend:
+        return self.backends.setdefault(window_id, FakeBackend(self.desktop))
 
     def close(self) -> None:
         pass
@@ -79,54 +142,56 @@ def app(driver: Driver) -> FakeApp:
     return driver._app(PID)
 
 
+# ---- the single-window guarantees, unchanged --------------------------------------
+
 def test_act_runs_when_nothing_changed(driver):
     snapshot = driver.observe(PID)
-    result = driver.act(snapshot, "CLICK", "submit")
+    result = driver.act(snapshot, "CLICK", "a_submit")
     assert result.done and result.snapshot is None
-    assert app(driver).backend.executed == [(ActionKind.CLICK, "submit")]
+    assert app(driver).desktop.executed == [(A, ActionKind.CLICK, "a_submit")]
 
 
 def test_act_refuses_when_a_sheet_appeared_after_the_snapshot(driver):
     snapshot = driver.observe(PID)
-    app(driver).backend.sheet = True
+    app(driver).desktop.sheet = True
     app(driver).journal.add("AXSheetCreated")
 
-    result = driver.act(snapshot, "CLICK", "submit")
+    result = driver.act(snapshot, "CLICK", "a_submit")
 
     assert result.status == "changed"
     assert result.changes == ("AXSheetCreated AXSheet",)
-    assert {e.id for e in result.snapshot.elements} == {"submit", "close"}
-    assert app(driver).backend.executed == []
+    assert {e.id for e in result.snapshot.elements} == {"a_submit", "a_close"}
+    assert app(driver).desktop.executed == []
 
 
 def test_act_proceeds_when_the_snapshot_already_showed_the_change(driver):
-    app(driver).backend.sheet = True
+    app(driver).desktop.sheet = True
     snapshot = driver.observe(PID)
     app(driver).journal.add("AXSheetCreated")  # announced after the observation
 
-    result = driver.act(snapshot, "CLICK", "close")
+    result = driver.act(snapshot, "CLICK", "a_close")
 
     assert result.done
-    assert app(driver).backend.executed == [(ActionKind.CLICK, "close")]
+    assert app(driver).desktop.executed == [(A, ActionKind.CLICK, "a_close")]
 
 
 def test_changes_before_the_snapshot_do_not_count(driver):
     app(driver).journal.add("AXSheetCreated")
     snapshot = driver.observe(PID)
-    assert driver.act(snapshot, "CLICK", "submit").done
+    assert driver.act(snapshot, "CLICK", "a_submit").done
 
 
 def test_stale_target_returns_a_fresh_snapshot(driver):
     snapshot = driver.observe(PID)
-    app(driver).backend.stale = True
-    result = driver.act(snapshot, "CLICK", "submit")
+    app(driver).backend(A).stale = True
+    result = driver.act(snapshot, "CLICK", "a_submit")
     assert result.status == "stale" and result.snapshot is not None
 
 
 def test_actions_must_be_offered_by_the_target(driver):
     snapshot = driver.observe(PID)
     with pytest.raises(UnsupportedDesktopAction):
-        driver.act(snapshot, "SET_VALUE", "submit", value="x")
+        driver.act(snapshot, "SET_VALUE", "a_submit", value="x")
     with pytest.raises(UnsupportedDesktopAction):
         driver.act(snapshot, "CLICK", "missing")
     with pytest.raises(UnsupportedDesktopAction):
@@ -138,14 +203,14 @@ def test_wait_returns_soon_after_a_structural_change(driver):
 
     def later() -> None:
         time.sleep(0.05)
-        app(driver).backend.sheet = True
+        app(driver).desktop.sheet = True
         app(driver).journal.add("AXSheetCreated")
 
     threading.Thread(target=later).start()
     started = time.monotonic()
     fresh = driver.wait(snapshot, timeout_s=2.0, quiet_s=0.02)
     assert time.monotonic() - started < 0.5
-    assert "close" in {e.id for e in fresh.elements}
+    assert "a_close" in {e.id for e in fresh.elements}
 
 
 def test_wait_gives_up_after_its_timeout(driver):
@@ -153,3 +218,87 @@ def test_wait_gives_up_after_its_timeout(driver):
     started = time.monotonic()
     driver.wait(snapshot, timeout_s=0.05)
     assert 0.04 < time.monotonic() - started < 0.5
+
+
+# ---- exact window targeting ---------------------------------------------------------
+
+def test_a_pid_resolves_once_and_the_snapshot_names_its_window(driver):
+    snapshot = driver.observe(PID)
+    assert driver.target_of(snapshot) == WindowTarget(PID, A)
+    assert app(driver).resolved == 1
+    # Acting does not resolve the app's window again.
+    app(driver).desktop.focused = B
+    driver.act(snapshot, "CLICK", "a_submit")
+    assert app(driver).resolved == 1
+
+
+def test_an_exact_window_is_observed_whatever_has_focus(driver):
+    snapshot = driver.observe(WindowTarget(PID, B))
+    assert snapshot.window == "Form B" and driver.target_of(snapshot) == WindowTarget(PID, B)
+    assert app(driver).resolved == 0
+
+
+def test_focus_moving_to_another_window_refuses_with_a_fresh_snapshot_of_the_same_window(driver):
+    snapshot = driver.observe(PID)  # Window A has focus.
+    app(driver).desktop.focused = B
+    app(driver).journal.add("AXFocusedWindowChanged", "AXWindow")
+    app(driver).desktop.sheet = True  # A changed meanwhile, so the refusal stands.
+
+    result = driver.act(snapshot, "CLICK", "a_submit")
+
+    assert result.status == "changed"
+    assert driver.target_of(result.snapshot) == WindowTarget(PID, A)
+    assert app(driver).desktop.executed == []
+
+
+def test_when_the_other_window_takes_focus_unannounced_the_action_still_goes_to_the_observed_one(driver):
+    snapshot = driver.observe(PID)
+    app(driver).desktop.focused = B  # e.g. the stacking order changed with no notification
+    assert driver.act(snapshot, "CLICK", "a_submit").done
+    assert app(driver).desktop.executed == [(A, ActionKind.CLICK, "a_submit")]
+
+
+def test_observing_another_window_keeps_the_first_snapshot_actionable(driver):
+    first = driver.observe(WindowTarget(PID, A))
+    driver.observe(WindowTarget(PID, B))
+    assert driver.act(first, "CLICK", "a_submit").done
+    assert app(driver).desktop.executed == [(A, ActionKind.CLICK, "a_submit")]
+
+
+def test_a_window_that_is_gone_is_reported_not_replaced(driver):
+    snapshot = driver.observe(PID)
+    del app(driver).desktop.windows[A]  # Closed in the background: nothing is announced.
+    with pytest.raises(TargetUnavailable, match="gone"):
+        driver.act(snapshot, "CLICK", "a_submit")
+    assert app(driver).desktop.executed == []
+
+
+def test_raw_input_with_a_snapshot_goes_to_the_snapshot_window(driver):
+    snapshot = driver.observe(PID)  # Window A, at x=100.
+    app(driver).desktop.focused = B
+    driver.click_at(PID, 10, 20, snapshot=snapshot)
+    driver.type_text(PID, "hi", snapshot=snapshot)
+    assert app(driver).app.inputs == [("click", A, 110, 70), ("type", A, "hi")]
+
+
+def test_raw_input_without_a_snapshot_resolves_the_window_once(driver):
+    app(driver).desktop.focused = B
+    driver.click_at(PID, 10, 20)
+    assert app(driver).app.inputs == [("click", B, 510, 70)]
+    driver.click_at(WindowTarget(PID, A), 1, 2)
+    assert app(driver).app.inputs[-1] == ("click", A, 101, 52)
+
+
+def test_raw_input_refuses_a_target_that_contradicts_the_snapshot(driver):
+    snapshot = driver.observe(WindowTarget(PID, A))
+    with pytest.raises(UnsupportedDesktopAction, match="snapshot is of window"):
+        driver.click_at(WindowTarget(PID, B), 1, 1, snapshot=snapshot)
+    assert app(driver).app.inputs == []
+
+
+def test_raw_input_is_refused_when_the_snapshot_window_changed(driver):
+    snapshot = driver.observe(PID)
+    app(driver).desktop.sheet = True
+    app(driver).journal.add("AXSheetCreated")
+    result = driver.click_at(PID, 10, 20, snapshot=snapshot)
+    assert result.status == "changed" and app(driver).app.inputs == []

@@ -4,9 +4,9 @@ import base64
 import io
 import json
 
-from test_driver import PID, FakeApp
+from test_driver import PID, A, B, FakeApp
 
-from arc_cua.driver import Driver
+from arc_cua.driver import Driver, WindowTarget
 from arc_cua.mcp_server import Server
 
 
@@ -32,8 +32,9 @@ def test_initialize_lists_tools_and_ignores_notifications():
 def test_observe_then_act_by_snapshot_and_element():
     srv = server()
     observed = call(srv, "observe", pid=PID)["structuredContent"]
-    assert observed["elements"] == [{"id": "submit", "role": "Button", "name": "Submit", "actions": ["CLICK"]}]
-    acted = call(srv, "act", snapshot=observed["snapshot"], action="CLICK", element="submit")["structuredContent"]
+    assert observed["window_id"] == A
+    assert observed["elements"] == [{"id": "a_submit", "role": "Button", "name": "Submit", "actions": ["CLICK"]}]
+    acted = call(srv, "act", snapshot=observed["snapshot"], action="CLICK", element="a_submit")["structuredContent"]
     assert acted["status"] == "done"
 
 
@@ -41,20 +42,21 @@ def test_act_returns_a_fresh_snapshot_when_the_app_changed():
     srv = server()
     observed = call(srv, "observe", pid=PID)["structuredContent"]
     app = srv.driver._app(PID)
-    app.backend.sheet = True
+    app.desktop.sheet = True
     app.journal.add("AXSheetCreated")
-    acted = call(srv, "act", snapshot=observed["snapshot"], action="CLICK", element="submit")["structuredContent"]
+    acted = call(srv, "act", snapshot=observed["snapshot"], action="CLICK", element="a_submit")["structuredContent"]
     assert acted["status"] == "changed"
     assert acted["fresh"]["snapshot"] != observed["snapshot"]
-    assert app.backend.executed == []
+    assert acted["fresh"]["window_id"] == A
+    assert app.desktop.executed == []
 
 
 def test_tool_errors_are_reported_not_raised():
     srv = server()
-    result = call(srv, "act", snapshot="s404", action="CLICK", element="submit")
+    result = call(srv, "act", snapshot="s404", action="CLICK", element="a_submit")
     assert result["isError"] and "observe again" in result["content"][0]["text"]
     observed = call(srv, "observe", pid=PID)["structuredContent"]
-    result = call(srv, "act", snapshot=observed["snapshot"], action="SET_VALUE", element="submit", value="x")
+    result = call(srv, "act", snapshot=observed["snapshot"], action="SET_VALUE", element="a_submit", value="x")
     assert result["isError"]
     assert call(srv, "nope")["isError"]
 
@@ -80,15 +82,15 @@ class RawDriver:
     def __init__(self) -> None:
         self.calls = []
 
-    def screenshot(self, pid, window_id=None):
+    def screenshot(self, where, snapshot=None):
         from arc_cua.driver import Screenshot
 
         return Screenshot(png=b"\x89PNG fake", width=400, height=300, scale=2.0, window_id=7, title="Canvas")
 
-    def click_at(self, pid, x, y, **options):
+    def click_at(self, where, x, y, **options):
         from arc_cua.driver import ActResult
 
-        self.calls.append(("click_at", x, y, options))
+        self.calls.append(("click_at", where, x, y, options))
         return ActResult("done", None, (), 1.0)
 
     def close(self):
@@ -110,11 +112,22 @@ def test_click_at_passes_points_and_options():
     srv = Server(driver)
     result = call(srv, "click_at", pid=PID, x=12.5, y=40, button="right", modifiers=["SHIFT"])
     assert result["structuredContent"]["status"] == "done"
-    assert driver.calls == [("click_at", 12.5, 40, {
-        "button": "right", "count": 1, "modifiers": ("SHIFT",), "window_id": None, "snapshot": None,
+    assert driver.calls == [("click_at", PID, 12.5, 40, {
+        "button": "right", "count": 1, "modifiers": ("SHIFT",), "snapshot": None,
     })]
+    call(srv, "click_at", pid=PID, x=1, y=2, window_id=7)
+    assert driver.calls[-1][1] == WindowTarget(PID, 7)
 
 
 def test_raw_tools_are_listed():
     tools = Server(RawDriver()).handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
     assert {"screenshot", "click_at", "drag", "scroll_at", "press", "type_text"} <= {t["name"] for t in tools}
+
+
+def test_observe_takes_an_exact_window_and_raw_input_defaults_to_the_snapshot_window():
+    srv = server()
+    observed = call(srv, "observe", pid=PID, window_id=B)["structuredContent"]
+    assert observed["window_id"] == B and observed["window"] == "Form B"
+    app = srv.driver._app(PID)
+    call(srv, "type_text", pid=PID, text="hi", snapshot=observed["snapshot"])
+    assert app.app.inputs == [("type", B, "hi")]

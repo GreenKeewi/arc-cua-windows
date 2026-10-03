@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from typing import Any
 
 from ..errors import TargetUnavailable, UnsupportedDesktopAction
@@ -68,22 +69,25 @@ class MacOSApp:
         if not _alive(self.pid):
             raise TargetUnavailable(f"{self.name} (process ID {self.pid}) quit.")
 
-    def open(self, *, wait_s: float = 2.0, park: bool = True) -> None:
+    def open(self, *, wait_s: float = 2.0, park: bool = True, window_id: int | None = None) -> None:
         """Make sure there is a window to work in.
 
         Waits briefly for a window that is still opening, then brings a minimized
         window, or a hidden app's windows, onto an invisible display. ``close()``
         puts them back. With ``park=False`` the windows stay out of sight; call
         ``open()`` again when input events or pixels need a window on a display.
+        ``window_id`` names the minimized window to bring, when there are several.
         """
         background.ensure_available()
         self.check_running()
         if self._parking.active:
-            return
+            if window_id is None or self.on_display(window_id):
+                return
+            self._parking.restore()  # Another window is parked; bring this one instead.
         if not wait_until(lambda: bool(self.windows()) or self._parking.needed(), wait_s):
             raise TargetUnavailable(self._no_window_reason())
-        if park and not self.windows():
-            self._parking.park()
+        if park and (not self.windows() if window_id is None else not self.on_display(window_id)):
+            self._parking.park(window_id)
 
     def out_of_sight(self) -> bool:
         """True when the app has no window on screen but a minimized one, or is hidden."""
@@ -110,6 +114,92 @@ class MacOSApp:
             self.check_running()
             raise TargetUnavailable(self._no_window_reason())
         return windows[0]
+
+    def all_windows(self) -> list[dict[str, Any]]:
+        """Every window of the app: those on a display front to back, then minimized ones
+        and a hidden app's: window_id, title, bounds, on_screen, minimized."""
+        found: list[dict[str, Any]] = [
+            {"window_id": w.window_id, "title": w.title, "bounds": w.bounds, "on_screen": True, "minimized": False}
+            for w in self.windows()
+        ]
+        seen = {entry["window_id"] for entry in found}
+        for ax in _attr(self.ax, "AXWindows") or ():
+            if ax is None:
+                continue
+            identifier = identify_ax_window(ax, self.pid)
+            if identifier is None or identifier in seen:
+                continue
+            seen.add(identifier)
+            info = window_server_info(identifier)
+            found.append({
+                "window_id": identifier,
+                "title": str(_attr(ax, "AXTitle") or (info or {}).get("title") or ""),
+                "bounds": _ax_frame(ax) or (info or {}).get("bounds"),
+                "on_screen": False,
+                "minimized": _attr(ax, "AXMinimized") is True,
+            })
+        return found
+
+    def exists(self, window_id: int) -> bool:
+        """Whether the window still exists (open, minimized or hidden), not closed."""
+        return window_server_info(window_id) is not None
+
+    def on_display(self, window_id: int) -> bool:
+        """Whether one of the app's windows is on a display (the user's, or the invisible one)."""
+        return any(window.window_id == window_id for window in self.windows())
+
+    def window(self, window_id: int) -> MacOSWindow:
+        """One of the app's windows on a display. Raises TargetUnavailable when it is gone."""
+        for window in self.windows():
+            if window.window_id == window_id:
+                return window
+        self.check_running()
+        if window_server_info(window_id) is None:
+            raise TargetUnavailable(
+                f"{self.name}'s window {window_id} is gone (closed, or replaced by a new one); "
+                "find the app's window again."
+            )
+        raise TargetUnavailable(f"{self.name}'s window {window_id} is not on a display")
+
+    def ax_window(self, window_id: int) -> Any:
+        """The accessibility element of one of the app's windows, or None."""
+        return find_ax_window(self.ax, window_id)
+
+    def attached_windows(self, window_id: int) -> list[MacOSWindow]:
+        """Sheets and drawers attached to a window that are on a display, front to back.
+        They are separate windows to the window server."""
+        ax = self.ax_window(window_id)
+        if ax is None:
+            return []
+        attached = {
+            background.window_id(child)
+            for child in (_attr(ax, "AXChildren") or ())
+            if _attr(child, "AXRole") in ("AXSheet", "AXDrawer")
+        }
+        attached.discard(None)
+        return [window for window in self.windows() if window.window_id in attached]
+
+    def _input_window(self, window_id: int | None, point: tuple[float, float] | None = None) -> MacOSWindow:
+        """The window to address input to. With ``window_id``, that window or a sheet
+        attached to it (the one under ``point``, else the frontmost sheet, since a
+        sheet takes the window's input); without, as before: the window under the
+        point, or the key window."""
+        if window_id is None:
+            if point is None:
+                return self.key_window()
+            window = self.window_at(point)
+            if window is None:
+                self.check_running()
+                raise UnsupportedDesktopAction(f"The target is outside {self.name}'s visible windows")
+            return window
+        target = self.window(window_id)
+        sheets = self.attached_windows(window_id)
+        if point is None:
+            return sheets[0] if sheets else target
+        for window in (*sheets, target):
+            if _contains(window.bounds, point):
+                return window
+        raise UnsupportedDesktopAction(f"The point is outside {self.name}'s window {window_id}")
 
     def window_at(self, point: tuple[float, float]) -> MacOSWindow | None:
         x, y = point
@@ -145,38 +235,45 @@ class MacOSApp:
 
     # ---- input -------------------------------------------------------------------
 
-    def click(self, bounds: Bounds, *, count: int = 1, right: bool = False, flags: int = 0) -> None:
+    def click(
+        self, bounds: Bounds, *, count: int = 1, right: bool = False, flags: int = 0, window_id: int | None = None,
+    ) -> None:
         point = bounds.center
-        window = self.window_at(point)
-        if window is None:
-            self.check_running()
-            raise UnsupportedDesktopAction(f"The target is outside {self.name}'s visible windows")
+        window = self._input_window(window_id, point)
         with self.input_scope():
             background.click(self.pid, window.window_id, point, count=count, right=right, flags=flags)
 
-    def drag(self, source: Bounds, destination: Bounds) -> None:
-        window = self.window_at(source.center)
-        if window is None:
-            self.check_running()
-            raise UnsupportedDesktopAction(f"The drag source is outside {self.name}'s visible windows")
-        with self.input_scope():
-            background.drag(self.pid, window.window_id, source.center, destination.center)
+    def drag(self, source: Bounds, destination: Bounds, *, window_id: int | None = None) -> None:
+        self.drag_path([source.center, destination.center], window_id=window_id)
 
-    def scroll(self, direction: str, *, amount: int = 450) -> None:
+    def drag_path(self, points: list[tuple[float, float]], *, window_id: int | None = None) -> None:
+        """Drag through screen points; the window is the one under the first point."""
+        window = self._input_window(window_id, points[0])
+        with self.input_scope():
+            background.drag_path(self.pid, window.window_id, points)
+
+    def scroll(self, direction: str, *, amount: int = 450, window_id: int | None = None) -> None:
         deltas = {"UP": (0, amount), "DOWN": (0, -amount), "LEFT": (amount, 0), "RIGHT": (-amount, 0)}
         if direction not in deltas:
             raise UnsupportedDesktopAction(f"Unknown scroll direction: {direction}")
-        window = self.key_window()
+        window = self._input_window(window_id)
         dx, dy = deltas[direction]
         with self.input_scope():
             background.scroll(self.pid, window.window_id, window.bounds.center, dx=dx, dy=dy)
 
-    def press(self, code: int, flags: int = 0) -> None:
-        window = self.key_window()
+    def scroll_at(self, point: tuple[float, float], *, dx: int, dy: int, window_id: int | None = None) -> None:
+        window = self._input_window(window_id, point)
+        with self.input_scope():
+            background.scroll(self.pid, window.window_id, point, dx=dx, dy=dy)
+
+    def press(self, code: int, flags: int = 0, *, window_id: int | None = None) -> None:
+        window = self._input_window(window_id)
         with self.input_scope():
             background.press(self.pid, window.window_id, code, flags)
 
-    def shortcut(self, modifiers: tuple[str, ...], key: str, code: int, flags: int) -> None:
+    def shortcut(
+        self, modifiers: tuple[str, ...], key: str, code: int, flags: int, *, window_id: int | None = None,
+    ) -> None:
         """Press a chord. Command chords go through the app's menu when an item has them,
         since menu key equivalents only reach the front app."""
         if "MOD" in modifiers:
@@ -189,10 +286,10 @@ class MacOSApp:
                     if background.menu_shortcut(self.ax, character, modifiers):
                         logger.debug("background shortcut via=menu")
                         return
-        self.press(code, flags)
+        self.press(code, flags, window_id=window_id)
 
-    def type_text(self, text: str) -> None:
-        window = self.key_window()
+    def type_text(self, text: str, *, window_id: int | None = None) -> None:
+        window = self._input_window(window_id)
         with self.input_scope():
             background.type_text(self.pid, window.window_id, text, check=self.check_running)
 
@@ -240,6 +337,115 @@ class _InputScope:
     def __exit__(self, *exc: Any) -> None:
         self.app._last_input = time.monotonic()
         self.app.keep_behind()
+
+
+def _contains(bounds: Bounds, point: tuple[float, float]) -> bool:
+    x, y = point
+    return bounds.x <= x <= bounds.x + bounds.width and bounds.y <= y <= bounds.y + bounds.height
+
+
+def window_server_info(window_id: int) -> dict[str, Any] | None:
+    """What the window server knows about a window, on screen or not: pid, title,
+    bounds and whether it is on screen. None when the window no longer exists."""
+    import Quartz  # type: ignore
+
+    # Describes a window by id whether it is on screen, minimized or hidden.
+    infos = Quartz.CGWindowListCreateDescriptionFromArray([window_id]) or []
+    for info in infos:
+        if int(info.get(Quartz.kCGWindowNumber, 0)) != window_id:
+            continue
+        rect = info.get(Quartz.kCGWindowBounds) or {}
+        return {
+            "pid": int(info.get(Quartz.kCGWindowOwnerPID, 0)),
+            "title": str(info.get(Quartz.kCGWindowName) or ""),
+            "bounds": Bounds(
+                float(rect.get("X", 0)), float(rect.get("Y", 0)),
+                float(rect.get("Width", 0)), float(rect.get("Height", 0)),
+            ),
+            "on_screen": bool(info.get(Quartz.kCGWindowIsOnscreen, False)),
+        }
+    return None
+
+
+def find_ax_window(app_ax: Any, window_id: int, *, info: Callable[[int], dict[str, Any] | None] | None = None) -> Any:
+    """The app's AX window for a window-server window id, or None.
+
+    Matched by the id accessibility reports for each window. When a window reports
+    none, it is matched by what the window server knows about the id instead: the
+    same frame, and the same title when both have one."""
+    windows = [w for w in (_attr(app_ax, "AXWindows") or ()) if w is not None]
+    unidentified = []
+    for window in windows:
+        identifier = background.window_id(window)
+        if identifier == window_id:
+            return window
+        if identifier is None:
+            unidentified.append(window)
+    if not unidentified:
+        return None
+    known = (info or window_server_info)(window_id)
+    if known is None:
+        return None
+    for window in unidentified:
+        frame = _ax_frame(window)
+        title = str(_attr(window, "AXTitle") or "")
+        if frame is not None and _same_frame(frame, known["bounds"]) and (
+            not title or not known["title"] or title == known["title"]
+        ):
+            return window
+    return None
+
+
+def identify_ax_window(ax_window: Any, pid: int, shown: list[MacOSWindow] | None = None) -> int | None:
+    """The window-server id of an AX window: the id accessibility reports, else the
+    app's window with the same frame (and title, when both have one). ``shown`` limits
+    the match to those windows; otherwise all of the app's windows, on screen or not."""
+    identifier = background.window_id(ax_window)
+    if identifier is not None:
+        return identifier
+    frame = _ax_frame(ax_window)
+    if frame is None:
+        return None
+    title = str(_attr(ax_window, "AXTitle") or "")
+    candidates = [(w.window_id, w.bounds, w.title) for w in shown] if shown is not None else _app_windows(pid)
+    for candidate, bounds, candidate_title in candidates:
+        if _same_frame(frame, bounds) and (not title or not candidate_title or title == candidate_title):
+            return candidate
+    return None
+
+
+def _app_windows(pid: int) -> list[tuple[int, Bounds, str]]:
+    """All of an app's normal windows the window server knows, on screen or not."""
+    import Quartz  # type: ignore
+
+    found = []
+    for info in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID) or []:
+        if int(info.get(Quartz.kCGWindowOwnerPID, -1)) != pid or int(info.get(Quartz.kCGWindowLayer, 0) or 0) != 0:
+            continue
+        rect = info.get(Quartz.kCGWindowBounds) or {}
+        found.append((
+            int(info.get(Quartz.kCGWindowNumber, 0)),
+            Bounds(float(rect.get("X", 0)), float(rect.get("Y", 0)), float(rect.get("Width", 0)),
+                   float(rect.get("Height", 0))),
+            str(info.get(Quartz.kCGWindowName) or ""),
+        ))
+    return found
+
+def _same_frame(a: Bounds, b: Bounds) -> bool:
+    return all(abs(x - y) <= 1 for x, y in ((a.x, b.x), (a.y, b.y), (a.width, b.width), (a.height, b.height)))
+
+
+def _ax_frame(element: Any) -> Bounds | None:
+    import ApplicationServices as AS  # type: ignore
+
+    position, size = _attr(element, "AXPosition"), _attr(element, "AXSize")
+    if position is None or size is None:
+        return None
+    ok_position, point = AS.AXValueGetValue(position, AS.kAXValueCGPointType, None)
+    ok_size, dimensions = AS.AXValueGetValue(size, AS.kAXValueCGSizeType, None)
+    if not ok_position or not ok_size:
+        return None
+    return Bounds(float(point.x), float(point.y), float(dimensions.width), float(dimensions.height))
 
 
 def _alive(pid: int) -> bool:

@@ -143,10 +143,10 @@ class RecordingApp:
     def __init__(self):
         self.calls = []
 
-    def press(self, code, flags=0):
+    def press(self, code, flags=0, window_id=None):
         self.calls.append(("press", code, flags))
 
-    def shortcut(self, modifiers, key, code, flags):
+    def shortcut(self, modifiers, key, code, flags, window_id=None):
         self.calls.append(("shortcut", modifiers, key, code, flags))
 
 

@@ -28,6 +28,12 @@ def fake_app(**attributes):
     return SimpleNamespace(**{**defaults, **attributes})
 
 
+def patch_window_ids(monkeypatch, ids):
+    """Window-server ids for AX windows, by a function of the AX element."""
+    monkeypatch.setattr(macos_ax, "ax_window_id", ids)
+    monkeypatch.setattr(macos_ax, "identify_ax_window", lambda ref, pid, shown=None: ids(ref))
+
+
 def install_cf(monkeypatch):
     monkeypatch.setattr(macos_ax, "_core_foundation", lambda: SimpleNamespace(
         CFHash=lambda ref: 7,  # Deliberately collide distinct remote objects.
@@ -120,7 +126,7 @@ def test_inline_editor_uses_main_window_without_traversing_inactive_app_menus(mo
               AXChildren=[window, editor, Ref("inactive menus")])
     monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
     monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name))
-    monkeypatch.setattr(macos_ax, "window_id", lambda ref: 1 if ref is window else None)
+    patch_window_ids(monkeypatch, lambda ref: 1 if ref is window else None)
     monkeypatch.setattr(macos_ax.sys, "platform", "darwin")
     monkeypatch.setattr(macos_ax.MacOSAXBackend, "_require_accessibility", staticmethod(lambda: None))
     monkeypatch.setattr(macos_ax, "MacOSApp", lambda pid: fake_app(pid=pid, ax=app))
@@ -173,10 +179,10 @@ def test_click_does_not_dispatch_context_menu(monkeypatch):
     snapshot = DesktopSnapshot(application="Files", window="Folder", revision="1", elements=())
     backend.execute(snapshot, ExecutableAction(kind=ActionKind.CLICK, target_id="target"))
     assert native == []
-    assert pointer == [(bounds, {"count": 1, "button": "left"})]
+    assert pointer == [(bounds, {"count": 1, "button": "left", "window": None})]
     backend.execute(snapshot, ExecutableAction(kind=ActionKind.DOUBLE_CLICK, target_id="target"))
     assert native == []
-    assert pointer[-1] == (bounds, {"count": 2, "button": "left"})
+    assert pointer[-1] == (bounds, {"count": 2, "button": "left", "window": None})
 
 
 def test_opaque_ax_wrappers_do_not_change_observed_values():
@@ -243,7 +249,7 @@ def test_observe_uses_a_window_on_this_desktop_not_the_focused_one_elsewhere(mon
     monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
     monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name))
     ids = {"elsewhere": 7, "here": 1}
-    monkeypatch.setattr(macos_ax, "window_id", lambda ref: ids.get(getattr(ref, "identity", None)))
+    patch_window_ids(monkeypatch, lambda ref: ids.get(getattr(ref, "identity", None)))
     backend = object.__new__(macos_ax.MacOSAXBackend)
     backend._cache = None
     backend.app = fake_app(ax=app)
@@ -264,7 +270,7 @@ def test_observe_waits_for_an_app_that_is_replacing_its_window(monkeypatch):
     app = Ref("app", AXFocusedWindow=window, AXMainWindow=window, AXWindows=[window])
     monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
     monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name))
-    monkeypatch.setattr(macos_ax, "window_id", lambda ref: 1)
+    patch_window_ids(monkeypatch, lambda ref: 1)
     polls = iter([[], [], [SimpleNamespace(window_id=1)]])
     backend = object.__new__(macos_ax.MacOSAXBackend)
     backend._cache = None
@@ -564,7 +570,7 @@ def _out_of_sight_backend(monkeypatch, calls):
     api = SimpleNamespace(AXUIElementPerformAction=lambda ref, action: calls.append(action) or 0)
     monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
     monkeypatch.setattr(macos_ax, "_action_names", lambda *args: {"AXPress"})
-    monkeypatch.setattr(macos_ax, "_press_key", lambda app, key: calls.append(f"key {key}"))
+    monkeypatch.setattr(macos_ax, "_press_key", lambda app, key, window=None: calls.append(f"key {key}"))
     state = {"parked": False}
 
     def open_app():
@@ -594,3 +600,72 @@ def test_input_events_bring_an_out_of_sight_window_onto_the_display_first(monkey
     backend.execute(snapshot, ExecutableAction(kind=ActionKind.PRESS_KEY, key="TAB"))
     backend.execute(snapshot, ExecutableAction(kind=ActionKind.PRESS_KEY, key="TAB"))
     assert calls == ["park", "key TAB", "key TAB"]
+
+
+def _window_backend(monkeypatch, app, windows, focused_window=None):
+    """A backend over fake AX windows, identified by ``windows`` (id -> AX window)."""
+    install_cf(monkeypatch)
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: ref.attributes.get(name) if ref else None)
+    ids = {id(ax): identifier for identifier, ax in windows.items()}
+    patch_window_ids(monkeypatch, lambda ref: ids.get(id(ref)) if ref is not None else focused_window)
+    monkeypatch.setattr(macos_ax, "window_server_info", lambda wid: {"title": ""} if wid in windows else None)
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    backend.app = fake_app(
+        ax=app, ax_window=lambda wid: windows.get(wid),
+        windows=lambda: [SimpleNamespace(window_id=wid) for wid in windows],
+    )
+    backend.max_depth, backend.max_elements = 10, 10
+    backend._identities = macos_ax._AXIdentityRegistry()
+    backend._full_tree_supported = True
+    backend._element_from_ref = lambda ref, identity, **kw: DesktopElement(id=identity, role="Group", name=ref.identity)
+    return backend
+
+
+def test_observe_reads_the_exact_window_asked_for_not_the_focused_one(monkeypatch):
+    first, second = Ref("first", AXTitle="Form A"), Ref("second", AXTitle="Form B")
+    app = Ref("app", AXFocusedWindow=first, AXMainWindow=first, AXWindows=[first, second])
+    backend = _window_backend(monkeypatch, app, {1: first, 2: second})
+
+    snapshot = backend.observe(2)
+
+    assert snapshot.window == "Form B"
+    assert snapshot.context["window_id"] == 2
+    assert [element.name for element in snapshot.elements] == ["second"]
+    assert backend.observe().context["window_id"] == 1  # Without a window id: the focused one.
+
+
+def test_focus_in_another_window_is_not_read_into_the_snapshot(monkeypatch):
+    editor_window = Ref("first", AXTitle="Form A")
+    editor = Ref("editor", AXWindow=editor_window)
+    second = Ref("second", AXTitle="Form B")
+    app = Ref("app", AXFocusedWindow=editor_window, AXFocusedUIElement=editor, AXWindows=[editor_window, second])
+    backend = _window_backend(monkeypatch, app, {1: editor_window, 2: second})
+
+    assert [element.name for element in backend.observe(2).elements] == ["second"]
+    assert [element.name for element in backend.observe(1).elements] == ["first", "editor"]
+
+
+def test_a_window_that_is_gone_is_reported_at_once(monkeypatch):
+    only = Ref("only", AXTitle="Form A")
+    backend = _window_backend(monkeypatch, Ref("app", AXWindows=[only]), {1: only})
+    with pytest.raises(TargetUnavailable, match="gone"):
+        backend.observe(9)
+
+
+def test_key_presses_go_to_the_snapshot_window(monkeypatch):
+    presses = []
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    backend.app = fake_app(
+        on_display=lambda wid: True,
+        press=lambda code, flags=0, window_id=None: presses.append((code, window_id)),
+    )
+    backend._refs = {}
+    backend.is_fresh = lambda *args: True
+    snapshot = DesktopSnapshot(application="Form", window="Form B", revision="1", elements=(),
+                               context={"pid": 123, "window_id": 2})
+    backend.execute(snapshot, ExecutableAction(kind=ActionKind.PRESS_KEY, key="TAB"))
+    assert presses == [(macos_ax._KEYCODES["TAB"], 2)]

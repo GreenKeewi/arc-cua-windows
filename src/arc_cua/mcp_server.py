@@ -35,7 +35,9 @@ _IMAGE = "_png"  # A tool's PNG, sent as image content rather than in the JSON.
 INSTRUCTIONS = (
     "Control macOS apps in the background: the user's pointer, front app and windows stay as they are. "
     "Call observe(pid) to get a snapshot id and the window's elements; each element has an id and the "
-    "actions it offers. Then act(snapshot, action, element). If act returns status 'changed' or 'stale', "
+    "actions it offers. A snapshot is of one exact window (its window_id); windows(pid) lists them all and "
+    "observe(pid, window_id) reads a particular one. Then act(snapshot, action, element). If act returns "
+    "status 'changed' or 'stale', "
     "the app changed under the snapshot and nothing was done: decide again from the fresh snapshot it "
     "returns. commands(pid) lists the app's menu commands; run_command(pid, path) runs one."
 )
@@ -50,7 +52,10 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "windows",
-        "description": "An app's windows on screen, front to back: window_id, title, bounds.",
+        "description": (
+            "All of an app's windows: those on screen front to back, then minimized ones and a hidden app's. "
+            "Each has a window_id that observe and the input tools accept."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"pid": {"type": "integer"}},
@@ -61,8 +66,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "observe",
         "description": (
-            "Read the app's front window (or its minimized window, or a hidden app's window) as elements: "
-            "id, role, name, value and the actions each offers. Only what is on screen in the window is read. "
+            "Read one window as elements: id, role, name, value and the actions each offers. Without window_id, "
+            "the app's focused window (or its minimized window, or a hidden app's window). Only what is on "
+            "screen in the window is read. The result names its window_id; actions on the snapshot go to it. "
             "Returns a snapshot id for act. query keeps elements whose role, name or value contains it. "
             "Elements have no coordinates; use screenshot and click_at for what they do not cover."
         ),
@@ -70,6 +76,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "pid": {"type": "integer"},
+                "window_id": {"type": "integer", "description": "The exact window; from windows or a snapshot."},
                 "query": {"type": "string"},
                 "screenshot": {"type": "boolean", "description": "Also return a PNG of the window."},
             },
@@ -150,8 +157,14 @@ TOOLS: list[dict[str, Any]] = [
 
 _POINT = {"type": "number"}
 _RAW_COMMON = {
-    "window_id": {"type": "integer", "description": "Defaults to the app's front window."},
-    "snapshot": {"type": "string", "description": "Refuse the input if the app changed since this snapshot."},
+    "window_id": {
+        "type": "integer",
+        "description": "The window; defaults to the snapshot's window, else the app's focused window.",
+    },
+    "snapshot": {
+        "type": "string",
+        "description": "Send the input to this snapshot's window, and refuse it if the app changed since.",
+    },
 }
 
 RAW_TOOLS: list[dict[str, Any]] = [
@@ -163,7 +176,7 @@ RAW_TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"pid": {"type": "integer"}, "window_id": {"type": "integer"}},
+            "properties": {"pid": {"type": "integer"}, **_RAW_COMMON},
             "required": ["pid"],
             "additionalProperties": False,
         },
@@ -223,7 +236,7 @@ RAW_TOOLS: list[dict[str, Any]] = [
         "description": "Press a key (ENTER, TAB, ESCAPE, ARROW_DOWN...) or a chord (MOD+S; MOD is Command) in the app.",
         "inputSchema": {
             "type": "object",
-            "properties": {"pid": {"type": "integer"}, "keys": {"type": "string"}, "snapshot": _RAW_COMMON["snapshot"]},
+            "properties": {"pid": {"type": "integer"}, "keys": {"type": "string"}, **_RAW_COMMON},
             "required": ["pid", "keys"],
             "additionalProperties": False,
         },
@@ -235,7 +248,7 @@ RAW_TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"pid": {"type": "integer"}, "text": {"type": "string"}, "snapshot": _RAW_COMMON["snapshot"]},
+            "properties": {"pid": {"type": "integer"}, "text": {"type": "string"}, **_RAW_COMMON},
             "required": ["pid", "text"],
             "additionalProperties": False,
         },
@@ -285,6 +298,7 @@ class Server:
         result: dict[str, Any] = {
             "snapshot": self._keep(snapshot),
             "pid": snapshot.context.get("pid"),
+            "window_id": snapshot.context.get("window_id"),
             "application": snapshot.application,
             "window": snapshot.window,
             "elements": elements,
@@ -303,22 +317,33 @@ class Server:
         return {"apps": self.driver.apps()}
 
     def tool_windows(self, pid: int) -> dict[str, Any]:
-        return {"windows": [
-            {
-                "window_id": w.window_id, "title": w.title,
-                "bounds": {"x": w.bounds.x, "y": w.bounds.y, "width": w.bounds.width, "height": w.bounds.height},
-            }
-            for w in self.driver.windows(pid)
-        ]}
+        windows = []
+        for w in self.driver.windows(pid):
+            entry: dict[str, Any] = {"window_id": w.window_id, "title": w.title, "on_screen": w.on_screen}
+            if w.minimized:
+                entry["minimized"] = True
+            if w.bounds is not None:
+                entry["bounds"] = {"x": w.bounds.x, "y": w.bounds.y, "width": w.bounds.width, "height": w.bounds.height}
+            windows.append(entry)
+        return {"windows": windows}
 
-    def tool_observe(self, pid: int, query: str | None = None, screenshot: bool = False) -> dict[str, Any]:
-        result = self._render(self.driver.observe(pid), query)
+    @staticmethod
+    def _where(pid: int, window_id: int | None) -> Any:
+        from .driver import WindowTarget
+
+        return WindowTarget(pid, window_id) if window_id is not None else pid
+
+    def tool_observe(
+        self, pid: int, window_id: int | None = None, query: str | None = None, screenshot: bool = False,
+    ) -> dict[str, Any]:
+        snapshot = self.driver.observe(self._where(pid, window_id))
+        result = self._render(snapshot, query)
         if screenshot:
-            result.update(self.tool_screenshot(pid))
+            result.update(self.tool_screenshot(pid, window_id=snapshot.context.get("window_id")))
         return result
 
-    def tool_screenshot(self, pid: int, window_id: int | None = None) -> dict[str, Any]:
-        shot = self.driver.screenshot(pid, window_id=window_id)
+    def tool_screenshot(self, pid: int, window_id: int | None = None, snapshot: str | None = None) -> dict[str, Any]:
+        shot = self.driver.screenshot(self._where(pid, window_id), snapshot=self._maybe(snapshot))
         return {
             "screenshot": {"width": shot.width, "height": shot.height, "scale": round(shot.scale, 4),
                            "window_id": shot.window_id, "title": shot.title},
@@ -336,33 +361,46 @@ class Server:
     def _maybe(self, snapshot: str | None) -> DesktopSnapshot | None:
         return self._snapshot(snapshot) if snapshot else None
 
+    def _raw_where(self, pid: int, window_id: int | None, snapshot: str | None) -> tuple[Any, Any]:
+        """The input's window: the given one, else the snapshot's, else the app's (resolved once)."""
+        kept = self._maybe(snapshot)
+        if window_id is None and kept is not None:
+            window_id = kept.context.get("window_id")
+        return self._where(pid, window_id), kept
+
     def tool_click_at(
         self, pid: int, x: float, y: float, button: str = "left", count: int = 1, modifiers: list[str] | None = None,
         window_id: int | None = None, snapshot: str | None = None,
     ) -> dict[str, Any]:
+        where, kept = self._raw_where(pid, window_id, snapshot)
         return self._raw_result(self.driver.click_at(
-            pid, x, y, button=button, count=count, modifiers=tuple(modifiers or ()), window_id=window_id,
-            snapshot=self._maybe(snapshot),
+            where, x, y, button=button, count=count, modifiers=tuple(modifiers or ()), snapshot=kept,
         ))
 
     def tool_drag(
         self, pid: int, points: list[list[float]], window_id: int | None = None, snapshot: str | None = None,
     ) -> dict[str, Any]:
-        return self._raw_result(self.driver.drag(pid, points, window_id=window_id, snapshot=self._maybe(snapshot)))
+        where, kept = self._raw_where(pid, window_id, snapshot)
+        return self._raw_result(self.driver.drag(where, points, snapshot=kept))
 
     def tool_scroll_at(
         self, pid: int, x: float, y: float, dx: float = 0, dy: float = 0, window_id: int | None = None,
         snapshot: str | None = None,
     ) -> dict[str, Any]:
-        return self._raw_result(self.driver.scroll_at(
-            pid, x, y, dx=dx, dy=dy, window_id=window_id, snapshot=self._maybe(snapshot),
-        ))
+        where, kept = self._raw_where(pid, window_id, snapshot)
+        return self._raw_result(self.driver.scroll_at(where, x, y, dx=dx, dy=dy, snapshot=kept))
 
-    def tool_press(self, pid: int, keys: str, snapshot: str | None = None) -> dict[str, Any]:
-        return self._raw_result(self.driver.press(pid, keys, snapshot=self._maybe(snapshot)))
+    def tool_press(
+        self, pid: int, keys: str, window_id: int | None = None, snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        where, kept = self._raw_where(pid, window_id, snapshot)
+        return self._raw_result(self.driver.press(where, keys, snapshot=kept))
 
-    def tool_type_text(self, pid: int, text: str, snapshot: str | None = None) -> dict[str, Any]:
-        return self._raw_result(self.driver.type_text(pid, text, snapshot=self._maybe(snapshot)))
+    def tool_type_text(
+        self, pid: int, text: str, window_id: int | None = None, snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        where, kept = self._raw_where(pid, window_id, snapshot)
+        return self._raw_result(self.driver.type_text(where, text, snapshot=kept))
 
     def tool_act(
         self, snapshot: str, action: str, element: str | None = None, value: Any = None, key: str | None = None,

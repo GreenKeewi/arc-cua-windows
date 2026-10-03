@@ -1,5 +1,5 @@
 from .api import execute_payload, result_to_dict, subtask_from_dict
-from .driver import ActResult, Driver
+from .driver import ActResult, Driver, WindowTarget
 from .models import (
     ActionKind,
     Bounds,
@@ -30,6 +30,7 @@ __all__ = [
     "Subtask",
     "TerminalKind",
     "VerifyFn",
+    "WindowTarget",
     "execute_payload",
     "result_to_dict",
     "subtask_from_dict",

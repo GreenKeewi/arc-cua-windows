@@ -54,6 +54,7 @@ class Form(AppKit.NSObject):
         self.rows = rows
         self.submitted = 0
         self.counter = 0
+        self.second = None
         self.start = "shown"
         self.last = None
         return self
@@ -123,6 +124,25 @@ class Form(AppKit.NSObject):
     def tableView_objectValueForTableColumn_row_(self, table, column, row):
         return f"Item {row + 1:05d}"
 
+    def buildSecondWindow(self) -> None:
+        """A second window exactly over the first, with its own controls."""
+        frame = self.window.frame()
+        self.second = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            self.window.contentRectForFrameRect_(frame),
+            AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable | AppKit.NSWindowStyleMaskMiniaturizable,
+            AppKit.NSBackingStoreBuffered,
+            False,
+        )
+        self.second.setTitle_("Arc Bench Form 2")
+        view = self.second.contentView()
+        top = view.frame().size.height - 40
+        self.notes = make_field(view, "Notes", top)
+        self.agree = AppKit.NSButton.alloc().initWithFrame_(Foundation.NSMakeRect(130, top - 80, 200, 24))
+        self.agree.setButtonType_(AppKit.NSButtonTypeSwitch)
+        self.agree.setTitle_("Agree")
+        view.addSubview_(self.agree)
+        self.second.orderFrontRegardless()
+
     def applyStart_(self, timer) -> None:
         if self.start == "minimized":
             self.window.miniaturize_(None)
@@ -159,8 +179,13 @@ class Form(AppKit.NSObject):
     def increment_(self, sender) -> None:
         self.counter += 1
 
+    def secondToFront_(self, sender) -> None:
+        if self.second is not None:
+            self.second.orderFrontRegardless()
+
     def resetCounter_(self, sender) -> None:
         self.counter = 0
+        self.second = None
 
     def buildMenu(self) -> None:
         """App menu plus a Bench menu: Increment (Cmd+I) and More > Reset Counter."""
@@ -180,6 +205,8 @@ class Form(AppKit.NSObject):
         more = AppKit.NSMenu.alloc().initWithTitle_("More")
         reset = more.addItemWithTitle_action_keyEquivalent_("Reset Counter", "resetCounter:", "")
         reset.setTarget_(self)
+        raise_second = more.addItemWithTitle_action_keyEquivalent_("Second Window to Front", "secondToFront:", "")
+        raise_second.setTarget_(self)
         more_item.setSubmenu_(more)
         bench_item.setSubmenu_(bench)
         AppKit.NSApp.setMainMenu_(bar)
@@ -195,6 +222,7 @@ class Form(AppKit.NSObject):
             "plan": str(self.plan.titleOfSelectedItem()),
             "submitted": self.submitted,
             "counter": self.counter,
+            **({"notes": str(self.notes.stringValue()), "agree": bool(self.agree.state())} if self.second else {}),
             "dialog": self.dialog is not None,
             "active": bool(AppKit.NSApp.isActive()),
             "minimized": bool(self.window.isMiniaturized()),
@@ -215,6 +243,7 @@ def main() -> None:
     parser.add_argument("state_path")
     parser.add_argument("--rows", type=int, default=0)
     parser.add_argument("--start", choices=("shown", "minimized", "hidden"), default="shown")
+    parser.add_argument("--second-window", action="store_true", help="a second window over the first")
     args = parser.parse_args()
 
     # Keep the state timer precise: App Nap would otherwise delay the ground truth.
@@ -226,6 +255,8 @@ def main() -> None:
     form = Form.alloc().initWithPath_rows_(args.state_path, args.rows)
     form.build()
     form.buildMenu()
+    if args.second_window:
+        form.buildSecondWindow()
     form.start = args.start
     if args.start != "shown":
         # Once the run loop is up, so the window server knows the window first.

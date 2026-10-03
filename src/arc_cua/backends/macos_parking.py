@@ -137,16 +137,20 @@ class WindowParking:
     def hidden(self) -> bool:
         return _bool(self._app, "AXHidden")
 
-    def park(self) -> None:
-        """Park the windows background control will use. Raises TargetUnavailable when that is not possible."""
+    def park(self, wanted: int | None = None) -> None:
+        """Park the windows background control will use; ``wanted`` is the window id to
+        bring when it is minimized. Raises TargetUnavailable when that is not possible."""
         from .macos_background import window_id
 
         windows = self.windows()
         hidden = self.hidden()
         # A hidden app shows all its open windows when unhidden, so all of them move;
-        # otherwise one minimized window is brought back.
+        # otherwise one minimized window is brought back: the wanted one, else the first.
         open_windows = [window for window in windows if not _bool(window, "AXMinimized")] if hidden else []
-        minimized = None if open_windows else next((w for w in windows if _bool(w, "AXMinimized")), None)
+        minimized_windows = [w for w in windows if _bool(w, "AXMinimized")]
+        if wanted is not None:
+            minimized_windows.sort(key=lambda w: window_id(w) != wanted)
+        minimized = None if open_windows else next(iter(minimized_windows), None)
         moving = open_windows or ([minimized] if minimized is not None else [])
         if not moving:
             raise TargetUnavailable(
