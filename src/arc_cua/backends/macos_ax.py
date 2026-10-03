@@ -751,20 +751,42 @@ class MacOSAXBackend:
             date = datetime.strptime(str(value).strip()[:10], "%Y-%m-%d")
         except ValueError:
             raise UnsupportedDesktopAction(f"{value!r} is not a date like 2024-01-15") from None
-        parts = {
-            str(_attr(AS, child, "AXDescription") or "").lower(): child
-            for child in _descendants(AS, ref)
-            if _attr(AS, child, "AXRole") == "AXIncrementor"
-        }
-        if not all(name in parts for name in _DATE_PARTS):
-            raise UnsupportedDesktopAction("This date field does not expose year, month and day parts")
+        parts = [child for child in _descendants(AS, ref) if _attr(AS, child, "AXRole") == "AXIncrementor"]
+        named = _date_parts_by_name(AS, parts) or self._date_parts_by_behaviour(AS, parts)
         wanted = {"year": date.year, "month": date.month, "day": date.day}
         # Year and month first: they decide how many days the month has.
         for name in _DATE_PARTS:
-            part = parts[name]
+            part = named[name]
             if not _number(_attr(AS, part, "AXValue")):
                 AS.AXUIElementPerformAction(part, "AXIncrement")  # An empty part takes a first value.
+                _changed_value(AS, part, 0.0)
             self._set_by_steps(AS, part, wanted[name], None)
+
+    def _date_parts_by_behaviour(self, AS: Any, parts: list[Any]) -> dict[str, Any]:
+        """Tell a date field's parts apart by how they step, whatever language they are
+        labelled in: an empty year takes the current year where month and day take 1;
+        stepped past 12, a month wraps to 1 where a day goes on to 13."""
+        if len(parts) != 3:
+            raise UnsupportedDesktopAction("This date field does not have three parts (year, month and day)")
+        values = []
+        for part in parts:
+            if not _number(_attr(AS, part, "AXValue")):
+                AS.AXUIElementPerformAction(part, "AXIncrement")
+            values.append(_changed_value(AS, part, 0.0) or 0.0)
+        years = [part for part, first in zip(parts, values) if first > 31]
+        if len(years) != 1:
+            raise UnsupportedDesktopAction("Could not tell which part of this date field is the year")
+        rest = [part for part in parts if part is not years[0]]
+        past_twelve = []
+        for part in rest:
+            self._set_by_steps(AS, part, 12, None)
+            AS.AXUIElementPerformAction(part, "AXIncrement")
+            past_twelve.append(_changed_value(AS, part, 12.0))
+        if sorted(v or 0 for v in past_twelve) != [1, 13]:
+            raise UnsupportedDesktopAction("Could not tell the month and day parts of this date field apart")
+        month = rest[past_twelve.index(1)]
+        day = rest[1 - rest.index(month)]
+        return {"year": years[0], "month": month, "day": day}
 
     def _ensure_input_window(self, window: int | None = None) -> None:
         """Input events need a window on a display: bring an out-of-sight one onto the
@@ -860,6 +882,14 @@ def _wait_for_menu_to_close(AS: Any, item: Any, timeout_s: float = 1.0) -> None:
             time.sleep(_MENU_COMMIT_S)  # The choice lands just after the flash.
             return
         time.sleep(0.005)
+
+
+def _date_parts_by_name(AS: Any, parts: list[Any]) -> dict[str, Any] | None:
+    """A date field's parts by their English labels, when it has them (a quick path)."""
+    named = {str(_attr(AS, part, "AXDescription") or "").lower(): part for part in parts}
+    if all(name in named for name in _DATE_PARTS):
+        return {name: named[name] for name in _DATE_PARTS}
+    return None
 
 
 def _changed_value(AS: Any, ref: Any, before: float | None, timeout_s: float = 0.15) -> float | None:

@@ -790,3 +790,24 @@ def test_a_menu_that_closes_at_once_returns_at_once(monkeypatch):
     start = time.monotonic()
     macos_ax._wait_for_menu_to_close(SimpleNamespace(), object(), timeout_s=1.0)
     assert time.monotonic() - start < 0.05
+
+
+def test_a_web_date_in_another_language_is_set_by_how_its_parts_step(monkeypatch):
+    def part(description, first, wrap_at=None):
+        stepper = Stepper(0, 1, role="AXIncrementor", lo=0, hi=10_000, description=description)
+
+        def move(delta, stepper=stepper):
+            if stepper.value == 0 and delta > 0:
+                stepper.value = first  # An empty part takes a first value.
+            elif wrap_at is not None and stepper.value + delta > wrap_at:
+                stepper.value = 1
+            else:
+                stepper.value = max(1, stepper.value + delta)
+
+        stepper.move = move
+        return stepper
+
+    jour, mois, annee = part("jour", 1, wrap_at=31), part("mois", 1, wrap_at=12), part("année", 2026)
+    backend, api, keys = _stepping_backend(monkeypatch, [jour, mois, annee])  # Day first, as in French.
+    backend._set_web_date(api, "date", "2024-02-29")
+    assert (annee.value, mois.value, jour.value) == (2024, 2, 29)
