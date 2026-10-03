@@ -2,7 +2,7 @@
 
 > Superfast action layer for computer-use agents, powered by decision models.
 
-arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model (JEV) that executes the UI loop. No frontier model needed for every click. Built by Isle.
+arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model (JEV) that executes the UI loop. No frontier model needed for every click.
 
 ## Key concepts
 
@@ -31,7 +31,6 @@ Requires macOS with Accessibility and Screen Recording permissions.
 
 - Full documentation: https://arc.tryisle.com/llms-full.txt
 - Source: https://github.com/shhivv/arc-cua
-- Isle: https://tryisle.com
 
 ## Sections in llms-full.txt
 

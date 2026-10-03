@@ -85,8 +85,8 @@ take. Elements keep their ids from one snapshot to the next while they exist.
 |---|---|
 | `CLICK` | optional `modifier`: `MOD` (Command) or `SHIFT` |
 | `DOUBLE_CLICK`, `RIGHT_CLICK` | |
-| `SET_VALUE` | `value`: sets text fields, sliders, steppers and other settable values directly |
-| `TYPE_TEXT` | `value` |
+| `SET_VALUE` | `value`: text fields, sliders, steppers, web date fields (`2024-01-15`) and other settable values |
+| `TYPE_TEXT` | `value`: replaces the field's text |
 | `PRESS_KEY` | `key`: `ENTER`, `TAB`, `ESCAPE`, `ARROW_DOWN`… |
 | `HOTKEY` | `hotkey`: `MOD+S`, `MOD+SHIFT+Z`… |
 | `SCROLL` | `direction`: `UP`, `DOWN`, `LEFT`, `RIGHT` |
@@ -134,6 +134,27 @@ changes after that snapshot, or after `timeout_s` (default 1 s).
 `enabled` is as the app last updated it, which can lag until the menu is opened, so
 `run_command` presses the item either way.
 A full menu bar reads in tens of milliseconds. The system's Apple menu is left out.
+
+Menus belong to the app, not to a window: a command acts on the app's own key window,
+which may not be the window you observed. In an app with several windows open, act on
+the window's controls instead, or make sure the window you mean is the app's key one.
+
+### Web pages and documents
+
+A web page (in a web view, Safari or an Electron app) only notices input that runs
+its own handlers, and a document only counts a change it records as an edit. So:
+
+- Text in a web field or a document's text view is typed, not written as a value, so
+  the page sees its input events and the document is marked changed (and saved by Save).
+- Web checkboxes, switches and radio buttons are clicked, not set.
+- Web sliders, steppers and date fields are stepped to their value, which runs the
+  page's handlers; a date field takes `YYYY-MM-DD`, in any language.
+- Scrolling moves scroll bars through accessibility, which web views follow where they
+  ignore scroll events sent to a background app.
+- Picking from a popup or dropdown returns once the choice is committed (about a third
+  of a second after the pick, when AppKit has finished its menu flash).
+- A web view builds its accessibility tree on the first request after a page loads;
+  observing then waits briefly for the page instead of returning an empty window.
 
 ### Minimized windows and hidden apps
 
@@ -234,8 +255,11 @@ also checks that no action moved the user's pointer or changed their front app.
 
 - macOS only. For web pages, `ChromeBackend` works through the DevTools protocol
   instead (see the main README).
-- Popup buttons are set by opening their menu and picking the item; AppKit takes
-  about a third of a second to commit the choice.
+- Popup buttons are set by opening their menu and picking the item; the pick waits
+  about a third of a second for AppKit to commit it.
+- HTML5 drag and drop is not supported: it needs a real pointer drag on screen, and
+  the driver never moves the user's pointer.
+- Menu commands act on the app's key window (see Menu commands).
 - Pointer input (`click_at`, and clicks on controls that offer no press action)
   takes about 200 ms, for the event sequence browsers require.
 - Windows on another desktop (Space) are not reachable; the driver says so.

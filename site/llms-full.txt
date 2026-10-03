@@ -5,7 +5,6 @@
 arc-cua has two layers. The driver (arc_cua.Driver, or `arc-cua mcp` for MCP clients) reads macOS apps' windows, runs their menu commands and acts on their controls in the background, and can be used on its own. On top of it, arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model (JEV) that executes the UI loop. The planner owns intent (what to do, what text to use, what counts as success). The executor owns observation, fast decision-making, freshness checks, native UI execution, and bounded termination.
 
 Source: https://github.com/shhivv/arc-cua
-Built by Isle: https://tryisle.com
 
 ---
 
@@ -542,7 +541,12 @@ changed); ActResult.snapshot is then a fresh snapshot of the same window. A wind
 that was closed or replaced raises TargetUnavailable rather than being swapped for
 another. Structural changes come from
 a per-app journal of accessibility notifications; value changes do not count, so
-several actions on one snapshot work. Nothing waits after an action. Minimized
+several actions on one snapshot work. Nothing waits after an action. Menu commands
+act on the app's key window, not necessarily the observed one. In web content and
+document text views, text is typed (so pages see input events and documents record an
+edit), toggles are clicked, sliders, steppers and date fields (YYYY-MM-DD) are stepped,
+and scrolling moves scroll bars through accessibility. HTML5 drag and drop is not
+supported (it needs a real on-screen pointer drag). Minimized
 windows and hidden apps stay out of sight for accessibility actions and menu
 commands; input that needs events moves the window onto an invisible display first.
 

@@ -142,7 +142,10 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "run_command",
-        "description": "Run a menu command by path, such as 'File > Export > PDF…', with the app in the background.",
+        "description": (
+            "Run a menu command by path, such as 'File > Export > PDF…', with the app in the background. "
+            "Menus belong to the app: the command acts on the app's key window, which may not be the one observed."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {

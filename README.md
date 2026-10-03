@@ -474,6 +474,13 @@ Restart the terminal after granting permissions if necessary.
 
 ---
 
+## Benchmarks
+
+`benchmarks/` measures the driver on real apps and realistic multi-step workflows,
+and compares runs between versions: `python benchmarks/run.py all`, then
+`python benchmarks/run.py compare OLD.json NEW.json`. See
+[benchmarks/README.md](benchmarks/README.md).
+
 ## Examples
 
 ### Deterministic architecture demo
