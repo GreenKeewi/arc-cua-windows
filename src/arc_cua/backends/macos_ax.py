@@ -340,9 +340,12 @@ class MacOSAXBackend:
                 return
             actions = _action_names(AS, ref)
             if "AXPress" in actions:
+                menu_item = _attr(AS, ref, "AXRole") == "AXMenuItem"
                 error = AS.AXUIElementPerformAction(ref, "AXPress")
                 if error != 0:
                     raise UnsupportedDesktopAction(f"AX action AXPress failed with error {error}")
+                if menu_item:
+                    _wait_for_menu_to_close(AS, ref)
                 return
             self._ensure_input_window(window)
             bounds = _ax_bounds(AS, ref)
@@ -831,6 +834,7 @@ def _visible_rows(AS: Any, ref: Any) -> list[Any] | None:
 
 
 _MAX_STEPS = 400
+_MENU_COMMIT_S = 0.06
 
 
 def _number(value: Any) -> float | None:
@@ -838,6 +842,24 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _wait_for_menu_to_close(AS: Any, item: Any, timeout_s: float = 1.0) -> None:
+    """After picking a menu item, wait until the choice is committed. AppKit flashes
+    the item and commits about a third of a second later, after the flash; until
+    then a popup can already show the new item while the app has not received it,
+    and an action taken in between, such as submitting a form, would not see it."""
+    deadline = time.monotonic() + timeout_s
+    flashed = False
+    while time.monotonic() < deadline:
+        if _attr(AS, item, "AXRole") is None:
+            return  # The menu is gone.
+        selected = _attr(AS, item, "AXSelected") is True
+        flashed = flashed or selected
+        if flashed and not selected:
+            time.sleep(_MENU_COMMIT_S)  # The choice lands just after the flash.
+            return
+        time.sleep(0.005)
 
 
 def _changed_value(AS: Any, ref: Any, before: float | None, timeout_s: float = 0.15) -> float | None:

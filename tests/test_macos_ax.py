@@ -1,3 +1,4 @@
+import time
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -763,3 +764,29 @@ def test_scroll_moves_the_largest_scroll_area_by_most_of_a_page(monkeypatch):
     big_bar.value = 0.0
     assert backend._scroll_by_bar(api, "UP") and len(writes) == 1  # Already at the top: nothing to set.
     assert not backend._scroll_by_bar(api, "LEFT")  # No horizontal scroll bars.
+
+
+def test_a_menu_pick_returns_once_the_choice_is_committed(monkeypatch):
+    """AppKit flashes the picked item, then commits; the pick waits for that."""
+    start = time.monotonic()
+    selected_between = (0.02, 0.06)  # The flash, in seconds after the pick.
+    monkeypatch.setattr(macos_ax, "_MENU_COMMIT_S", 0.01)
+
+    def attr(api, ref, name):
+        elapsed = time.monotonic() - start
+        if name == "AXRole":
+            return "AXMenuItem"
+        if name == "AXSelected":
+            return selected_between[0] <= elapsed < selected_between[1]
+        return None
+
+    monkeypatch.setattr(macos_ax, "_attr", attr)
+    macos_ax._wait_for_menu_to_close(SimpleNamespace(), object(), timeout_s=1.0)
+    assert 0.06 <= time.monotonic() - start < 0.3
+
+
+def test_a_menu_that_closes_at_once_returns_at_once(monkeypatch):
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: None)
+    start = time.monotonic()
+    macos_ax._wait_for_menu_to_close(SimpleNamespace(), object(), timeout_s=1.0)
+    assert time.monotonic() - start < 0.05
