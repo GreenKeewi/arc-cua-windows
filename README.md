@@ -1,6 +1,8 @@
 # arc-cua
 
-**A background macOS driver, and a superfast action layer for computer-use agents powered by decision models.**
+**Superfast action layer for computer-use agents, powered by decision models.**
+
+Ships with a lean macOS driver you can use on its own, without the rest of arc-cua: see [docs/driver.md](docs/driver.md).
 
 > Built by [Isle](https://tryisle.com) — managed desktop environments for computer-use agents.
 
