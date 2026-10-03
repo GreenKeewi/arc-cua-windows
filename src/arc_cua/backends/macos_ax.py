@@ -13,6 +13,7 @@ from typing import Any
 from ..errors import StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
 from ..keyboard import parse_hotkey
 from ..models import ActionKind, Bounds, DesktopElement, DesktopSnapshot, ExecutableAction
+from . import macos_background as background
 from .macos_app import MacOSApp, identify_ax_window, window_server_info
 from .macos_ax_cache import AXChangeFeed, AXNode, AXNodeCache
 from .macos_background import window_id as ax_window_id
@@ -22,7 +23,12 @@ logger = logging.getLogger(__name__)
 
 # How long observe() waits for an app that momentarily shows no window.
 _WINDOW_WAIT_S = 1.0
+# How long to keep looking while a view (a web view whose page just loaded) is empty.
+_EMPTY_VIEW_WAIT_S = 0.6
 _TEXT_ROLES = {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
+# In web content, these toggle on a click. Writing their AXValue changes what they
+# show without running the page's handlers, so they are not offered SET_VALUE there.
+_WEB_TOGGLE_ROLES = {"CheckBox", "RadioButton", "Switch", "ToggleButton"}
 _ROW_ROLES = {"AXRow", "AXCell"}
 # Containers some apps (Chromium-based ones) report a settable value for; setting it does nothing.
 _CONTAINER_ROLES = {"AXGroup", "AXScrollArea", "AXSplitGroup", "AXWindow", "AXWebArea"}
@@ -200,17 +206,27 @@ class MacOSAXBackend:
             focused = None  # Focus is in another window; this snapshot is of this one.
         window_title = str(_attr(AS, root, "AXTitle") or app_name)
 
-        refs: dict[str, Any] = {}
-        self._row_states = {}
-        elements: list[DesktopElement] = []
-        visited: set[str] = set()
         window_bounds = _ax_bounds(AS, root)
-        # Sheets, dialogs and popovers met by the walk; the hybrid backend isolates them.
-        self.modal_roots: list[tuple[Any, Bounds | None, bool]] = []
-        if self._cache is not None:
-            cache = self._cache
-            cache.begin(AS, root, window_bounds, lambda ref: cache.role_of(ref) or str(_attr(AS, ref, "AXRole")))
-        self._walk(AS, root, elements, refs, visited, parent_id=None, depth=0, clip=window_bounds)
+        # A web view builds its accessibility tree on the first request after a page
+        # loads; until then the window's content view is empty. Look again briefly.
+        deadline = time.monotonic() + _EMPTY_VIEW_WAIT_S
+        while True:
+            refs: dict[str, Any] = {}
+            self._row_states = {}
+            self._web_ids: set[str] = set()
+            self._empty_views = 0
+            elements: list[DesktopElement] = []
+            visited: set[str] = set()
+            # Sheets, dialogs and popovers met by the walk; the hybrid backend isolates them.
+            self.modal_roots: list[tuple[Any, Bounds | None, bool]] = []
+            if self._cache is not None:
+                cache = self._cache
+                cache.begin(AS, root, window_bounds, lambda ref: cache.role_of(ref) or str(_attr(AS, ref, "AXRole")))
+            self._walk(AS, root, elements, refs, visited, parent_id=None, depth=0, clip=window_bounds)
+            if not self._empty_views or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+            self._identities.begin_observation()
         # Inline editors may sit outside the main window's AX subtree. Falling
         # back to the whole app also exposes hundreds of inactive menu items.
         if focused is not None:
@@ -341,6 +357,16 @@ class MacOSAXBackend:
             )
             return
 
+        if (
+            action.kind in {ActionKind.TYPE_TEXT, ActionKind.SET_VALUE}
+            and action.target_id in getattr(self, "_web_ids", ())
+            and _attr(AS, ref, "AXRole") in _TEXT_ROLES
+        ):
+            if action.value is None:
+                raise UnsupportedDesktopAction(f"{action.kind.value} requires an agent-supplied value")
+            self._type_into_web_field(AS, ref, str(action.value), window)
+            return
+
         if action.kind in {ActionKind.TYPE_TEXT, ActionKind.SET_VALUE}:
             error, settable = AS.AXUIElementIsAttributeSettable(
                 ref,
@@ -397,10 +423,12 @@ class MacOSAXBackend:
         clip: Bounds | None = None,
         refresh: bool = False,
         row: RowState | None = None,
+        web: bool = False,
     ) -> None:
         """Walk what is on screen: `clip` is the visible area of the enclosing window
         and scroll areas. Elements with area outside it are skipped with their subtree;
-        zero-size wrappers are not, since web content can overflow them."""
+        zero-size wrappers are not, since web content can overflow them. ``web`` is
+        true inside a web area (a page in a web view, browser or Electron app)."""
         if depth > self.max_depth or len(elements) >= self.max_elements:
             return
         element_id = self.identity_for(ref)
@@ -409,6 +437,9 @@ class MacOSAXBackend:
         visited.add(element_id)
 
         node, refresh = self._node(AS, ref, element_id, parent_id, refresh, row)
+        if depth == 1 and not node.children and _fills(node.bounds, clip):
+            # The window's content view is empty: a web view whose page just loaded.
+            self._empty_views = getattr(self, "_empty_views", 0) + 1
         if clip is not None:
             bounds = node.bounds
             if depth > 0 and bounds is not None and bounds.width > 0 and bounds.height > 0 \
@@ -420,6 +451,12 @@ class MacOSAXBackend:
             self.modal_roots.append((ref, node.bounds, depth == 0))
         element = node.element
         next_parent = parent_id
+        if element is not None and web:
+            if not hasattr(self, "_web_ids"):
+                self._web_ids = set()
+            self._web_ids.add(element.id)
+            if element.role in _WEB_TOGGLE_ROLES and ActionKind.SET_VALUE in element.actions:
+                element = replace(element, actions=tuple(a for a in element.actions if a != ActionKind.SET_VALUE))
         if element is not None:
             elements.append(element)
             refs[element.id] = ref
@@ -436,7 +473,7 @@ class MacOSAXBackend:
             if len(elements) >= self.max_elements:
                 break
             self._walk(AS, child, elements, refs, visited, parent_id=next_parent, depth=depth + 1,
-                       clip=clip, refresh=refresh, row=child_row)
+                       clip=clip, refresh=refresh, row=child_row, web=web or node.role == "AXWebArea")
 
     def _node(
         self, AS: Any, ref: Any, element_id: str, parent_id: str | None, refresh: bool, row: RowState | None = None,
@@ -595,6 +632,19 @@ class MacOSAXBackend:
             metadata=metadata,
         )
 
+    def _type_into_web_field(self, AS: Any, ref: Any, text: str, window: int | None) -> None:
+        """Replace a web field's text by typing. A page sees only typing: writing the
+        field's AXValue changes what it shows without firing the page's input events."""
+        self._ensure_input_window(window)
+        AS.AXUIElementSetAttributeValue(ref, "AXFocused", True)
+        had_text = bool(_attr(AS, ref, "AXValue"))
+        if had_text and not background.select_all(ref):
+            _press_hotkey(self.app, "MOD+A", window)
+        if text:
+            self.app.type_text(text, window_id=window)
+        elif had_text:
+            _press_key(self.app, "BACKSPACE", window)
+
     def _ensure_input_window(self, window: int | None = None) -> None:
         """Input events need a window on a display: bring an out-of-sight one onto the
         invisible display first. Its position changes, so read bounds after this."""
@@ -660,6 +710,13 @@ def _visible_rows(AS: Any, ref: Any) -> list[Any] | None:
         return ([header] if header is not None else []) + list(rows)
     visible = values["AXVisibleChildren"]
     return list(visible) if visible is not None else None
+
+
+def _fills(bounds: Bounds | None, area: Bounds | None) -> bool:
+    """Whether ``bounds`` covers at least half of ``area``."""
+    if bounds is None or area is None or area.width <= 0 or area.height <= 0:
+        return False
+    return bounds.width * bounds.height >= 0.5 * area.width * area.height
 
 
 def _overlaps(bounds: Bounds, clip: Bounds) -> bool:
