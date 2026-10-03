@@ -10,3 +10,4 @@ examples/demo_agent.py
 .DS_Store
 output/
 examples/showcase.py
+internal/
