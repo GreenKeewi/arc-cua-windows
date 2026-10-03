@@ -2,7 +2,7 @@
 
 **Superfast action layer for computer-use agents, powered by decision models.**
 
-Ships with a lean macOS driver you can use on its own, without the rest of arc-cua: see [docs/driver.md](docs/driver.md).
+Ships with a lean macOS driver you can use on its own, without the rest of arc-cua: see [docs/driver.md](https://github.com/shhivv/arc-cua/blob/master/docs/driver.md).
 
 ---
 
@@ -33,13 +33,13 @@ Any GPT, Claude, Gemini, local model, or deterministic planner can generate that
   stay as they are. It checks each action against the app as it is when the action
   runs, and works in minimized windows and hidden apps. Use it on its own, with no
   decision model: from any MCP client with `arc-cua mcp`, or from Python with
-  `arc_cua.Driver`. See **[docs/driver.md](docs/driver.md)**.
+  `arc_cua.Driver`. See **[docs/driver.md](https://github.com/shhivv/arc-cua/blob/master/docs/driver.md)**.
 - **An action layer** on top of it: hand a bounded subtask to a fast decision
   model, which runs the UI loop and returns when the subtask is done. The rest of
   this README is about this layer.
 
 ```bash
-claude mcp add arc-cua -- arc-cua mcp   # the driver as MCP tools in Claude Code
+claude mcp add arc-cua -- uvx --from 'arc-cua[macos]' arc-cua mcp   # the driver as MCP tools in Claude Code
 ```
 
 ---
@@ -130,7 +130,7 @@ An answer that fails validation, such as a choice outside the offered options,
 executes nothing. `ChoicePolicy` asks the same questions again (`invalid_retries`,
 default 1), then raises `InvalidChoiceResponse` naming the question.
 
-See [the extension guide](site/llms-full.txt) for the request and answer shapes.
+See [the extension guide](https://github.com/shhivv/arc-cua/blob/master/site/llms-full.txt) for the request and answer shapes.
 
 ### The agent owns intent
 
@@ -162,7 +162,7 @@ result = execute_payload(executor, {
 })
 ```
 
-Chords use uppercase key names and one or more `MOD`, `CTRL`, `ALT`, or `SHIFT` modifiers, for example `MOD+S`, `CTRL+ALT+7`, or `SHIFT+F12`. `MOD` means Command on macOS. Supported keys include A-Z, 0-9, F1-F20, navigation keys, and named punctuation keys; see [the keyboard vocabulary](src/arc_cua/keyboard.py). The macOS backend uses US/ANSI physical key positions. Each shortcut is one chord, not a sequence of actions.
+Chords use uppercase key names and one or more `MOD`, `CTRL`, `ALT`, or `SHIFT` modifiers, for example `MOD+S`, `CTRL+ALT+7`, or `SHIFT+F12`. `MOD` means Command on macOS. Supported keys include A-Z, 0-9, F1-F20, navigation keys, and named punctuation keys; see [the keyboard vocabulary](https://github.com/shhivv/arc-cua/blob/master/src/arc_cua/keyboard.py). The macOS backend uses US/ANSI physical key positions. Each shortcut is one chord, not a sequence of actions.
 
 Malformed declarations fail when the subtask is created. JEV can choose only offered chords; runtime validation also rejects hotkeys outside the defaults and the current subtask's declarations, including decisions from custom policies.
 
@@ -448,15 +448,14 @@ uses (operation, target, input, key, completion checks). `BLOCKED` and
 The desktop backends are macOS-only; the Chrome backend runs wherever Chrome does.
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-
-pip install -e '.[macos]'    # macOS desktop apps
-pip install -e '.[browser]'  # Chrome
+pip install 'arc-cua[macos]'    # macOS desktop apps (the driver needs this extra)
+pip install 'arc-cua[browser]'  # Chrome
 ```
 
+From a checkout: `pip install -e '.[macos]'`.
+
 To use only the driver, that is all: run `arc-cua mcp` from your MCP client, or
-use `arc_cua.Driver` (see [docs/driver.md](docs/driver.md)). For the action layer,
+use `arc_cua.Driver` (see [docs/driver.md](https://github.com/shhivv/arc-cua/blob/master/docs/driver.md)). For the action layer,
 set your TypeSafe key:
 
 ```bash
@@ -479,7 +478,7 @@ Restart the terminal after granting permissions if necessary.
 `benchmarks/` measures the driver on real apps and realistic multi-step workflows,
 and compares runs between versions: `python benchmarks/run.py all`, then
 `python benchmarks/run.py compare OLD.json NEW.json`. See
-[benchmarks/README.md](benchmarks/README.md).
+[benchmarks/README.md](https://github.com/shhivv/arc-cua/blob/master/benchmarks/README.md).
 
 ## Examples
 

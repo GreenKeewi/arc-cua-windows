@@ -1,13 +1,32 @@
 [project]
 name = "arc-cua"
 version = "0.1.0"
-description = "Superfast action layer for computer-use agents, powered by decision models"
+description = "Superfast action layer for computer-use agents, powered by decision models, with a standalone macOS driver"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+authors = [{name = "Shiv Shanmugam"}]
+keywords = ["computer-use", "agents", "macos", "accessibility", "automation", "mcp", "decision-models"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Desktop Environment",
+]
 dependencies = [
   "httpx[http2]>=0.28,<1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/shhivv/arc-cua"
+Documentation = "https://github.com/shhivv/arc-cua/blob/master/docs/driver.md"
+Changelog = "https://github.com/shhivv/arc-cua/blob/master/CHANGELOG.md"
+Issues = "https://github.com/shhivv/arc-cua/issues"
 
 [project.scripts]
 arc-cua = "arc_cua.cli:main"

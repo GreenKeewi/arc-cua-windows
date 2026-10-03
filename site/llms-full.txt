@@ -13,10 +13,8 @@ Source: https://github.com/shhivv/arc-cua
 ### Install
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[macos]'
-export TYPESAFE_API_KEY=...
+pip install 'arc-cua[macos]'
+export TYPESAFE_API_KEY=...   # only for the decision-model action layer
 ```
 
 macOS permissions required:
@@ -912,7 +910,7 @@ Loggers: `arc_cua.runtime`, `arc_cua.backends.chrome`, `arc_cua.backends.cdp`, `
 Runtime:
 - httpx[http2] >= 0.28, < 1
 
-macOS extras (pip install -e '.[macos]'):
+macOS extras (pip install 'arc-cua[macos]'):
 - pyobjc-framework-ApplicationServices >= 11
 - pyobjc-framework-Cocoa >= 11
 - pyobjc-framework-Quartz >= 11

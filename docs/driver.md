@@ -15,8 +15,11 @@ backends; see the [main README](../README.md) for it.
 ## Set up
 
 ```bash
-pip install -e '.[macos]'
+pip install 'arc-cua[macos]'
 ```
+
+Or let `uvx` fetch it when the MCP client starts it, as below. From a checkout:
+`pip install -e '.[macos]'`.
 
 The process that runs the driver needs **Accessibility**, and **Screen Recording**
 for screenshots: System Settings → Privacy & Security. With MCP, that is the app
@@ -25,16 +28,18 @@ hosting the MCP client (your terminal, for Claude Code or Codex in a terminal).
 ### Claude Code
 
 ```bash
-claude mcp add arc-cua -- arc-cua mcp
+claude mcp add arc-cua -- uvx --from 'arc-cua[macos]' arc-cua mcp
 ```
+
+(With arc-cua installed, `claude mcp add arc-cua -- arc-cua mcp`.)
 
 ### Codex
 
 ```toml
 # ~/.codex/config.toml
 [mcp_servers.arc-cua]
-command = "arc-cua"
-args = ["mcp"]
+command = "uvx"
+args = ["--from", "arc-cua[macos]", "arc-cua", "mcp"]
 ```
 
 Any other client: run `arc-cua mcp`; it speaks MCP over standard input and output,
@@ -231,19 +236,31 @@ it moved back when it closes.
 
 ## Measured
 
-On an Apple-silicon Mac running macOS 26.6, through `arc-cua mcp` (medians):
+On an Apple M5 running macOS 26.6, through `arc-cua mcp` (medians), single operations:
 
 | | |
 |---|---|
-| Observe Calculator / System Settings / Obsidian (Electron) | 20 / 55 / 14 ms |
-| Observe Finder showing 2,000 files | 37 ms |
-| Observe with a screenshot (Calculator) | 35 ms |
-| Click until the effect is visible | 29 ms |
-| One step: observe, click, observe | 50 ms |
-| Type 200 characters into a field | 6 ms |
+| Observe Calculator / System Settings | 10 / 23 ms |
+| Observe Finder showing 2,000 files | 36 ms |
+| Observe with a screenshot (Calculator) | 33 ms |
+| Click until the effect is visible | 11 ms |
+| One step: observe, click, observe | 21 ms |
+| Type 200 characters into a field | 5 ms |
 | Run a menu command until the effect is visible | 9 ms |
-| Observe and click in a minimized window / a hidden app | 49 / 22 ms |
-| Act on a snapshot taken before a sheet opened | refused in 5 ms, fresh snapshot returned |
+| Observe and click in a minimized window / a hidden app | 56 / 33 ms |
+| Act on a snapshot taken before a sheet opened | refused, with a fresh snapshot of the window and its sheet, in 30 ms |
+
+And multi-step workflows, end to end (all 5/5):
+
+| Workflow | Steps | Time |
+|---|---|---|
+| Calculator: (12 + 30) × 4 with its buttons | 9 | 0.28 s |
+| TextEdit: replace a document's text and save it | 2 | 1.6 s |
+| Finder: open two folders and select a file | 3 | 1.1 s |
+| A native form: two fields, a checkbox, a popup, a sheet, submit, a menu command | 9 | 1.4 s |
+| The same form in a minimized window / a covered window | 3 / 2 | 77 / 77 ms |
+| A web signup form: text, email, dropdown, date, slider, radio, checkbox, submit | 8 | 1.3 s |
+| A web field 45 rows down: scroll to it, edit it, save | 2 | 0.58 s |
 
 `python benchmarks/run.py primitives` reproduces these on your Mac, against real apps
 and a native fixture app whose state is checked without going through the driver; it

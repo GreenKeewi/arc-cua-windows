@@ -21,8 +21,8 @@ arc-cua lets a planner or CUA agent hand off bounded desktop subtasks to a fast 
 ## Install
 
 ```
-pip install -e '.[macos]'
-export TYPESAFE_API_KEY=...
+pip install 'arc-cua[macos]'
+export TYPESAFE_API_KEY=...   # only for the decision-model action layer
 ```
 
 Requires macOS with Accessibility and Screen Recording permissions.
