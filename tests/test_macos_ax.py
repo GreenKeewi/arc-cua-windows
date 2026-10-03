@@ -669,3 +669,67 @@ def test_key_presses_go_to_the_snapshot_window(monkeypatch):
                                context={"pid": 123, "window_id": 2})
     backend.execute(snapshot, ExecutableAction(kind=ActionKind.PRESS_KEY, key="TAB"))
     assert presses == [(macos_ax._KEYCODES["TAB"], 2)]
+
+
+class Stepper:
+    """A web control that moves by ``step`` per AXIncrement/AXDecrement and by 1 per arrow key."""
+
+    def __init__(self, value, step, role="AXSlider", lo=0, hi=100, description=""):
+        self.value, self.step, self.role, self.lo, self.hi, self.description = value, step, role, lo, hi, description
+
+    def move(self, delta):
+        self.value = max(self.lo, min(self.hi, self.value + delta))
+
+
+def _stepping_backend(monkeypatch, controls):
+    api = SimpleNamespace(
+        AXUIElementPerformAction=lambda ref, action: ref.move(ref.step if action == "AXIncrement" else -ref.step),
+        AXUIElementSetAttributeValue=lambda ref, name, value: 0,
+    )
+    attributes = {"AXValue": lambda r: r.value, "AXRole": lambda r: r.role, "AXDescription": lambda r: r.description,
+                  "AXChildren": lambda r: controls if r == "date" else None}
+    monkeypatch.setattr(macos_ax, "_attr", lambda api, ref, name: attributes[name](ref) if name in attributes else None)
+    keys = []
+
+    def press(app, key, window=None):
+        keys.append(key)
+        for control in controls:
+            control.move(1 if key == "ARROW_RIGHT" else -1)
+
+    monkeypatch.setattr(macos_ax, "_press_key", press)
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend.app = fake_app(on_display=lambda wid: True)
+    return backend, api, keys
+
+
+def test_a_web_slider_is_stepped_to_its_value(monkeypatch):
+    slider = Stepper(50, 5)
+    backend, api, keys = _stepping_backend(monkeypatch, [slider])
+    backend._set_by_steps(api, slider, 25, None)
+    assert slider.value == 25 and keys == []
+
+
+def test_a_coarse_slider_steps_back_and_finishes_with_keys(monkeypatch):
+    slider = Stepper(50, 5)
+    backend, api, keys = _stepping_backend(monkeypatch, [slider])
+    backend._set_by_steps(api, slider, 63, None)
+    assert slider.value == 63 and keys == ["ARROW_RIGHT"] * 3
+
+
+def test_a_value_out_of_range_is_reported(monkeypatch):
+    stepper = Stepper(5, 1, role="AXIncrementor", lo=1, hi=12)
+    backend, api, keys = _stepping_backend(monkeypatch, [stepper])
+    with pytest.raises(UnsupportedDesktopAction, match="stopped at 12"):
+        backend._set_by_steps(api, stepper, 40, None)
+
+
+def test_a_web_date_is_set_part_by_part(monkeypatch):
+    parts = [Stepper(0, 1, role="AXIncrementor", lo=0, hi=12, description="month"),
+             Stepper(0, 1, role="AXIncrementor", lo=0, hi=31, description="day"),
+             Stepper(0, 1, role="AXIncrementor", lo=0, hi=3000, description="year")]
+    parts[2].move = lambda delta, part=parts[2]: setattr(part, "value", 2026 if part.value == 0 else part.value + delta)
+    backend, api, keys = _stepping_backend(monkeypatch, parts)
+    backend._set_web_date(api, "date", "2024-12-25")
+    assert [p.value for p in parts] == [12, 25, 2024]
+    with pytest.raises(UnsupportedDesktopAction, match="not a date"):
+        backend._set_web_date(api, "date", "next week")

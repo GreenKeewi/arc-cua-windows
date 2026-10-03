@@ -29,6 +29,10 @@ _TEXT_ROLES = {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
 # In web content, these toggle on a click. Writing their AXValue changes what they
 # show without running the page's handlers, so they are not offered SET_VALUE there.
 _WEB_TOGGLE_ROLES = {"CheckBox", "RadioButton", "Switch", "ToggleButton"}
+# In web content, values of these are set by stepping (AXIncrement/AXDecrement), which
+# runs the page's input handlers, where writing AXValue does not.
+_WEB_STEPPED_ROLES = {"AXSlider", "AXIncrementor"}
+_DATE_PARTS = ("year", "month", "day")
 _ROW_ROLES = {"AXRow", "AXCell"}
 # Containers some apps (Chromium-based ones) report a settable value for; setting it does nothing.
 _CONTAINER_ROLES = {"AXGroup", "AXScrollArea", "AXSplitGroup", "AXWindow", "AXWebArea"}
@@ -366,6 +370,14 @@ class MacOSAXBackend:
                 raise UnsupportedDesktopAction(f"{action.kind.value} requires an agent-supplied value")
             self._type_into_web_field(AS, ref, str(action.value), window)
             return
+        if action.kind == ActionKind.SET_VALUE and action.target_id in getattr(self, "_web_ids", ()):
+            role = _attr(AS, ref, "AXRole")
+            if role == "AXDateTimeArea":
+                self._set_web_date(AS, ref, action.value)
+                return
+            if role in _WEB_STEPPED_ROLES:
+                self._set_by_steps(AS, ref, action.value, window)
+                return
 
         if action.kind in {ActionKind.TYPE_TEXT, ActionKind.SET_VALUE}:
             error, settable = AS.AXUIElementIsAttributeSettable(
@@ -457,6 +469,9 @@ class MacOSAXBackend:
             self._web_ids.add(element.id)
             if element.role in _WEB_TOGGLE_ROLES and ActionKind.SET_VALUE in element.actions:
                 element = replace(element, actions=tuple(a for a in element.actions if a != ActionKind.SET_VALUE))
+            elif element.role == "DateTimeArea" and ActionKind.SET_VALUE not in element.actions:
+                # Set as a whole from a date such as 2024-01-15, part by part.
+                element = replace(element, actions=(*element.actions, ActionKind.SET_VALUE))
         if element is not None:
             elements.append(element)
             refs[element.id] = ref
@@ -645,6 +660,67 @@ class MacOSAXBackend:
         elif had_text:
             _press_key(self.app, "BACKSPACE", window)
 
+    def _set_by_steps(self, AS: Any, ref: Any, value: Any, window: int | None) -> None:
+        """Step a web slider or stepper to ``value`` with AXIncrement/AXDecrement, which
+        run the page's handlers; a slider finishes with arrow keys when its accessibility
+        step is coarser than the gap left."""
+        try:
+            target = float(value)
+        except (TypeError, ValueError):
+            raise UnsupportedDesktopAction(f"{value!r} is not a number for this control") from None
+        current = _number(_attr(AS, ref, "AXValue"))
+        for _ in range(_MAX_STEPS):
+            if current is None or abs(current - target) < 1e-9:
+                return
+            action = "AXIncrement" if current < target else "AXDecrement"
+            AS.AXUIElementPerformAction(ref, action)
+            after = _changed_value(AS, ref, current)
+            if after is None or after == current:
+                break  # At the end of its range.
+            if (action == "AXIncrement" and after > target) or (action == "AXDecrement" and after < target):
+                # Stepped past it: step back, then close the gap with single key steps.
+                AS.AXUIElementPerformAction(ref, "AXDecrement" if action == "AXIncrement" else "AXIncrement")
+                current = _number(_attr(AS, ref, "AXValue"))
+                break
+            current = after
+        if current is None or abs(current - target) < 1e-9:
+            return
+        if _attr(AS, ref, "AXRole") != "AXSlider":
+            raise UnsupportedDesktopAction(f"The control stopped at {current:g}, not {target:g}")
+        self._ensure_input_window(window)
+        AS.AXUIElementSetAttributeValue(ref, "AXFocused", True)
+        for _ in range(_MAX_STEPS):
+            if abs(current - target) < 1e-9:
+                return
+            _press_key(self.app, "ARROW_RIGHT" if current < target else "ARROW_LEFT", window)
+            after = _changed_value(AS, ref, current)
+            if after is None or after == current:
+                raise UnsupportedDesktopAction(f"The slider stopped at {current:g}, not {target:g}")
+            if (after - target) * (current - target) < 0:
+                return  # Its keyboard step is coarser too; this is as close as it goes.
+            current = after
+
+    def _set_web_date(self, AS: Any, ref: Any, value: Any) -> None:
+        """Set a web date field from YYYY-MM-DD by stepping its year, month and day parts."""
+        try:
+            date = datetime.strptime(str(value).strip()[:10], "%Y-%m-%d")
+        except ValueError:
+            raise UnsupportedDesktopAction(f"{value!r} is not a date like 2024-01-15") from None
+        parts = {
+            str(_attr(AS, child, "AXDescription") or "").lower(): child
+            for child in _descendants(AS, ref)
+            if _attr(AS, child, "AXRole") == "AXIncrementor"
+        }
+        if not all(name in parts for name in _DATE_PARTS):
+            raise UnsupportedDesktopAction("This date field does not expose year, month and day parts")
+        wanted = {"year": date.year, "month": date.month, "day": date.day}
+        # Year and month first: they decide how many days the month has.
+        for name in _DATE_PARTS:
+            part = parts[name]
+            if not _number(_attr(AS, part, "AXValue")):
+                AS.AXUIElementPerformAction(part, "AXIncrement")  # An empty part takes a first value.
+            self._set_by_steps(AS, part, wanted[name], None)
+
     def _ensure_input_window(self, window: int | None = None) -> None:
         """Input events need a window on a display: bring an out-of-sight one onto the
         invisible display first. Its position changes, so read bounds after this."""
@@ -710,6 +786,36 @@ def _visible_rows(AS: Any, ref: Any) -> list[Any] | None:
         return ([header] if header is not None else []) + list(rows)
     visible = values["AXVisibleChildren"]
     return list(visible) if visible is not None else None
+
+
+_MAX_STEPS = 400
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _changed_value(AS: Any, ref: Any, before: float | None, timeout_s: float = 0.15) -> float | None:
+    """The control's value once it differs from ``before`` (pages update it a moment
+    after a step), or its value at the timeout."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        value = _number(_attr(AS, ref, "AXValue"))
+        if value != before or time.monotonic() >= deadline:
+            return value
+        time.sleep(0.003)
+
+
+def _descendants(AS: Any, ref: Any, depth: int = 4) -> list[Any]:
+    found = []
+    for child in _attr(AS, ref, "AXChildren") or ():
+        found.append(child)
+        if depth > 1:
+            found.extend(_descendants(AS, child, depth - 1))
+    return found
 
 
 def _fills(bounds: Bounds | None, area: Bounds | None) -> bool:
