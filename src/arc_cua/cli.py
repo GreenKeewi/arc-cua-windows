@@ -1,5 +1,7 @@
 """Command line interface.
 
+``arc-cua mcp`` serves the macOS driver to MCP clients over stdio (see mcp_server).
+
 ``arc-cua run`` executes one subtask against one macOS app and exits. It reads a
 single JSON object from standard input, prints one JSON line to standard output
 after every action and a final result line, and sends logs to standard error.
@@ -254,6 +256,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_parser.add_argument("-v", "--verbose", action="store_true", help="log debug detail to standard error")
     run_parser.add_argument("--log", metavar="FILE", help="append one JSON line per decision to FILE")
+    mcp_parser = commands.add_parser(
+        "mcp",
+        help="serve the macOS driver to MCP clients over standard input and output",
+        description=(
+            "Serve observe, act, wait, commands and run_command as MCP tools over stdio, for Claude Code, "
+            "Codex or any MCP client. Logs go to standard error."
+        ),
+    )
+    mcp_parser.add_argument("-v", "--verbose", action="store_true", help="log debug detail to standard error")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -268,6 +279,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # Only protocol lines reach standard output; anything else printed goes to standard error.
     stdout, sys.stdout = sys.stdout, sys.stderr
+    if args.command == "mcp":
+        from .mcp_server import serve
+
+        try:
+            return serve(sys.stdin, stdout)
+        except KeyboardInterrupt:
+            return 130
+        finally:
+            sys.stdout = stdout
     log = open(args.log, "a", encoding="utf-8") if args.log else None
     try:
         return run(sys.stdin, stdout, log)
