@@ -54,6 +54,7 @@ _WEB_NOTIFICATIONS = ("AXValueChanged", "AXSelectedTextChanged", "AXFocusedUIEle
                       "AXTitleChanged")
 FORCE_ACCESSIBILITY = "--force-renderer-accessibility"
 _CANCEL_POLL_S = 0.05
+_AFTER_PARKING = SettleTiming(reaction_s=0.1, quiet_s=0.1, timeout_s=0.6)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +176,7 @@ class Driver:
             raise RuntimeError("arc_cua.Driver controls macOS apps and needs macOS")
         self._factory = app_factory or _App
         self._apps: dict[int, Any] = {}
+        self._moved: WindowTarget | None = None  # A window the current input moved onto the invisible display.
         # Set from another thread to stop the operation in progress: a wait returns early
         # and an action not yet started is not performed; either raises Cancelled.
         # Moving a window onto the invisible display, or back, always completes.
@@ -517,6 +519,12 @@ class Driver:
             )
         if not app.on_display(target.window_id):
             app.open(window_id=target.window_id)
+            self._moved = target
+            # Moving the window posts notifications of its own (shown, made key); let them
+            # pass, so they are not taken for the app's reaction to the input.
+            owner = self._app(target.pid)
+            if (count := owner.settle_probe()) is not None:
+                wait_for_quiet(owner.settle_probe, count, _AFTER_PARKING)
         return app.window(target.window_id)
 
     def _raw(
@@ -524,6 +532,10 @@ class Driver:
     ) -> ActResult:
         started = time.perf_counter()
         app = self._app(target.pid)
+        moved, self._moved = self._moved == target, None
+        if settle and moved and snapshot is not None:
+            # Out of sight the window read differently; compare against it as it is now.
+            snapshot = self.observe(target)
         before = app.settle_probe() if settle else None
         self._stop_if_cancelled()
         send()

@@ -93,6 +93,29 @@ class MacOSApp:
             raise TargetUnavailable(self._no_window_reason())
         if park and (not self.windows() if window_id is None else not self.on_display(window_id)):
             self._parking.park(window_id)
+            if (window := self._parking.unminimized) is not None:
+                self._make_key(background.window_id(window))
+
+    def _make_key(self, window_id: int | None) -> None:
+        """Let a window brought back from the Dock take key events.
+
+        Deminiaturized while its app is in the background, a window is neither main nor
+        key, and the app sends key events nowhere. A background click makes it key, as
+        a user's click would, without bringing the app to the front. It goes to an inert
+        spot at the top of the window (the frame, the title, empty toolbar space); with
+        none, nothing is clicked."""
+        if window_id is None:
+            return
+        try:
+            bounds = self.window(window_id).bounds
+        except TargetUnavailable:
+            return
+        point = _inert_point(self.ax, bounds)
+        if point is None:
+            logger.debug("no inert spot to make window %s key", window_id)
+            return
+        with self.input_scope():
+            background.click(self.pid, window_id, point)
 
     @cached_property
     def embeds_chromium(self) -> bool:
@@ -391,6 +414,22 @@ def scroll_area_by_bars(app_ax: Any, point: tuple[float, float], *, dx: float, d
         target = min(1.0, max(0.0, float(position) - delta / (extent - viewport)))
         moved = AS.AXUIElementSetAttributeValue(bar, "AXValue", target) == 0 or moved
     return moved
+
+
+_INERT_ROLES = frozenset({"AXWindow", "AXStaticText", "AXToolbar"})
+
+
+def _inert_point(app_ax: Any, bounds: Bounds) -> tuple[float, float] | None:
+    """A point near the top of a window where a click does nothing but focus it."""
+    import ApplicationServices as AS  # type: ignore
+
+    y = bounds.y + 5
+    for fraction in (0.5, 0.4, 0.6, 0.3, 0.7):
+        x = bounds.x + bounds.width * fraction
+        error, element = AS.AXUIElementCopyElementAtPosition(app_ax, float(x), float(y), None)
+        if error == 0 and element is not None and _attr(element, "AXRole") in _INERT_ROLES:
+            return x, y
+    return None
 
 
 def _contains(bounds: Bounds, point: tuple[float, float]) -> bool:

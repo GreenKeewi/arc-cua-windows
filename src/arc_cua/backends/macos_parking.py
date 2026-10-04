@@ -125,6 +125,11 @@ class WindowParking:
     def active(self) -> bool:
         return bool(self._parked)
 
+    @property
+    def unminimized(self) -> Any:
+        """The minimized window brought back for background control, if any."""
+        return self._unminimized
+
     def needed(self) -> bool:
         """True when the app is hidden, or none of its windows is on screen but one is minimized."""
         if self.hidden():

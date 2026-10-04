@@ -39,6 +39,10 @@
 
 ### Fixed
 
+- Key presses and typing into a minimized window went nowhere: brought back from the
+  Dock while its app stays in the background, the window was neither main nor key. A
+  background click on an inert spot at its top (the frame, the title, empty toolbar
+  space) now makes it key, without bringing the app to the front.
 - Input with a `snapshot` to a minimized window or a hidden app was refused as
   `changed` the first time: moving the window onto the invisible display announced
   the app shown or the window deminiaturized, which the driver counted as the app

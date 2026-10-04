@@ -493,6 +493,14 @@ def test_an_action_that_closes_its_window_settles_on_the_apps_window(driver):
     assert result.done and result.snapshot.context["window_id"] == A
 
 
+def test_input_that_moves_a_window_onto_the_invisible_display_is_not_taken_for_a_reaction(driver):
+    # Out of sight the window reads differently; moving it is not the app reacting.
+    app(driver).desktop.out_of_sight.add(A)
+    result = driver.type_text(PID, "hi", snapshot=driver.observe(PID), settle=True)
+    assert result.done and app(driver).app.parked == [A]
+    assert result.settled.reacted is False
+
+
 def test_a_change_no_notification_announced_still_counts_as_a_reaction(driver):
     app(driver).desktop.shows_presses = True
     result = driver.act(driver.observe(PID), "CLICK", "a_submit", settle=True)

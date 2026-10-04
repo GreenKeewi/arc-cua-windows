@@ -76,3 +76,26 @@ def test_a_sheet_on_the_target_window_takes_its_input(monkeypatch):
     assert app._input_window(2) is sheet  # Keys go to the sheet.
     with pytest.raises(UnsupportedDesktopAction, match="outside"):
         app._input_window(2, (900, 900))
+
+
+def _hit_test(monkeypatch, roles_by_x):
+    """AXUIElementCopyElementAtPosition finds the element whose role is given for that x."""
+    import ApplicationServices as AS
+
+    def at(app, x, y, _):
+        role = roles_by_x.get(round(x))
+        return (0, Ref("hit", AXRole=role)) if role else (-25200, None)
+
+    monkeypatch.setattr(AS, "AXUIElementCopyElementAtPosition", at)
+    monkeypatch.setattr(macos_app, "_attr", lambda ref, name: ref.attributes.get(name))
+
+
+def test_a_restored_window_is_focused_by_clicking_an_inert_spot(monkeypatch):
+    # The middle of the title bar holds a toolbar button; 40% across is the window frame.
+    _hit_test(monkeypatch, {150: "AXButton", 140: "AXWindow"})
+    assert macos_app._inert_point(None, Bounds(100, 50, 100, 80)) == (140, 55)
+
+
+def test_with_no_inert_spot_nothing_is_clicked(monkeypatch):
+    _hit_test(monkeypatch, {x: "AXTextField" for x in range(100, 201)})
+    assert macos_app._inert_point(None, Bounds(100, 50, 100, 80)) is None
