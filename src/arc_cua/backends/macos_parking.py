@@ -245,11 +245,9 @@ def _running_app(pid: int) -> Any:
 def _attr(element: Any, name: str) -> Any:
     import ApplicationServices as AS  # type: ignore
 
-    try:
-        error, value = AS.AXUIElementCopyAttributeValue(element, name, None)
-    except Exception:
-        return None
-    return value if error == 0 else None
+    from .macos_background import copy_attribute
+
+    return copy_attribute(AS, element, name)[1]
 
 
 def _bool(element: Any, name: str) -> bool:

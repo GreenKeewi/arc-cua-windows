@@ -248,8 +248,8 @@ class MacOSApp:
     def _no_window_reason(self) -> str:
         if self._parking.needed():
             return (
-                f"{self.name} has no window on screen: it is hidden or its window is minimized. "
-                "Open the backend first (`with backend:`) to use such windows out of sight."
+                f"{self.name} has no window on screen (it is hidden or its windows are minimized), "
+                "and accessibility lists none of its windows."
             )
         return f"{self.name} has no open window on this desktop."
 
@@ -403,8 +403,11 @@ def window_server_info(window_id: int) -> dict[str, Any] | None:
     bounds and whether it is on screen. None when the window no longer exists."""
     import Quartz  # type: ignore
 
-    # Describes a window by id whether it is on screen, minimized or hidden.
+    # Describes a window by id whether it is on screen, minimized or hidden. A window
+    # counts as gone only when the full window list lacks it too.
     infos = Quartz.CGWindowListCreateDescriptionFromArray([window_id]) or []
+    if not any(int(info.get(Quartz.kCGWindowNumber, 0)) == window_id for info in infos):
+        infos = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID) or []
     for info in infos:
         if int(info.get(Quartz.kCGWindowNumber, 0)) != window_id:
             continue
@@ -515,8 +518,4 @@ def _alive(pid: int) -> bool:
 def _attr(element: Any, name: str) -> Any:
     import ApplicationServices as AS  # type: ignore
 
-    try:
-        error, value = AS.AXUIElementCopyAttributeValue(element, name, None)
-    except Exception:
-        return None
-    return value if error == 0 else None
+    return background.copy_attribute(AS, element, name)[1]

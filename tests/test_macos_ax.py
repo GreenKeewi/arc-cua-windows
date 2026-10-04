@@ -289,11 +289,30 @@ def test_observe_fails_clearly_when_the_app_has_no_usable_window(monkeypatch):
 
     backend = object.__new__(macos_ax.MacOSAXBackend)
     backend._cache = None
-    backend.app = fake_app(windows=lambda: [], require_window=no_window)
-    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(), None))
+    backend.app = fake_app(windows=lambda: [], require_window=no_window, ax=Ref("app"))
+    api = SimpleNamespace(AXUIElementCopyAttributeValue=lambda ref, name, out: (0, []))
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (api, None))
     monkeypatch.setattr(macos_ax, "_WINDOW_WAIT_S", 0.1)
     with pytest.raises(TargetUnavailable, match="no open window"):
         backend.observe()
+
+
+def test_observe_reports_the_accessibility_error_when_windows_cannot_be_read(monkeypatch):
+    calls = []
+
+    def refuse(ref, name, out):
+        calls.append(name)
+        return -25204, None
+
+    backend = object.__new__(macos_ax.MacOSAXBackend)
+    backend._cache = None
+    backend.app = fake_app(windows=lambda: [], out_of_sight=lambda: True, ax=Ref("app"))
+    monkeypatch.setattr(macos_ax, "_frameworks", lambda: (SimpleNamespace(AXUIElementCopyAttributeValue=refuse), None))
+    monkeypatch.setattr(macos_ax, "_WINDOW_WAIT_S", 0.1)
+    monkeypatch.setattr(backend, "_request_full_tree", lambda api, ref: None, raising=False)
+    with pytest.raises(TargetUnavailable, match=r"AX error -25204"):
+        backend.observe()
+    assert calls[-2:] == ["AXWindows", "AXWindows"]  # A quick refusal is tried twice.
 
 
 def test_freshness_fails_clearly_once_the_app_quits():

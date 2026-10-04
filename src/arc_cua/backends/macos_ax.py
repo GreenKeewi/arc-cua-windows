@@ -183,6 +183,13 @@ class MacOSAXBackend:
             if root is not None and identifier is not None:
                 return root, identifier, focused
             if time.monotonic() >= deadline:
+                self.app.check_running()
+                error, _ = background.copy_attribute(AS, self.app.ax, "AXWindows")
+                if error != 0:
+                    raise TargetUnavailable(
+                        f"{app_name} didn't answer accessibility for its windows (AX error {error}); "
+                        "try again shortly."
+                    )
                 if wanted is None and not on_screen:
                     self.app.require_window()  # Raises TargetUnavailable with the reason.
                 self.app.check_running()
@@ -1000,11 +1007,7 @@ def copy_attributes(AS: Any, ref: Any, names: tuple[str, ...]) -> dict[str, Any]
 
 
 def _attr(AS: Any, ref: Any, name: str) -> Any:
-    try:
-        error, value = AS.AXUIElementCopyAttributeValue(ref, name, None)
-    except Exception:
-        return None
-    return value if error == 0 else None
+    return background.copy_attribute(AS, ref, name)[1]
 
 
 def _action_names(AS: Any, ref: Any) -> set[str]:

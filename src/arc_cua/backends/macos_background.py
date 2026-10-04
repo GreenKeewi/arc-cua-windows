@@ -162,6 +162,34 @@ def _pointer(obj: Any) -> int:
     return obj.__c_void_p__().value
 
 
+# kAXErrorNoValue and kAXErrorAttributeUnsupported: the element has no such value, which is no failure.
+_AX_ABSENT = (-25212, -25205)
+_AX_CANNOT_COMPLETE = -25204
+# A refusal faster than this is a passing one; a slower one is the messaging timeout, not worth waiting out twice.
+_AX_QUICK_S = 0.25
+
+
+def copy_attribute(AS: Any, element: Any, name: str) -> tuple[int, Any]:
+    """An accessibility attribute as (AX error, value); the value is None on an error.
+    A request the app refuses at once is tried a second time, since apps refuse
+    briefly while busy (launching, unhiding, changing windows)."""
+    for attempt in (1, 2):
+        started = time.monotonic()
+        try:
+            error, value = AS.AXUIElementCopyAttributeValue(element, name, None)
+        except Exception:
+            return -25200, None  # kAXErrorFailure
+        if error == 0:
+            return 0, value
+        if error in _AX_ABSENT:
+            return error, None
+        logger.debug("accessibility read failed attribute=%s error=%d attempt=%d", name, error, attempt)
+        if error != _AX_CANNOT_COMPLETE or time.monotonic() - started > _AX_QUICK_S:
+            break
+        time.sleep(0.05)
+    return error, None
+
+
 def window_id(ax_window: Any) -> int | None:
     """CGWindowID of an AX window element, or None."""
     function = _sl().functions.get("_AXUIElementGetWindow")
