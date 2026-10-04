@@ -14,7 +14,13 @@ The Agent is the driver-facing side: find a control by its accessibility label,
 click it, type into it, set it, choose from it, press keys, run a menu command.
 ArcAgent drives arc in-process; ArcMCPAgent drives `arc-cua mcp` over stdio.
 
-    python benchmarks/run.py workflows [--reps N] [--only NAME ...]
+By default an Agent looks again every 100 ms until the label it expects appears, as
+a script that knows the next screen can. ``--agent-mode`` works as a model-driven
+agent must, without knowing what comes next: every action settles (``settle: true``)
+and its fresh snapshot is the next observation; when a label is not there yet, the
+agent settles on that snapshot again rather than polling for it.
+
+    python benchmarks/run.py workflows [--reps N] [--only NAME ...] [--agent-mode]
 """
 
 from __future__ import annotations
@@ -56,13 +62,17 @@ class Agent:
     """Finds controls by label and acts on them. Subclasses implement the driver calls."""
 
     name = "agent"
+    agent_mode = False  # Settle after every action instead of polling for the expected label.
 
     def attach(self, pid: int, title: str | None = None) -> None:
         """Work in the app's window titled ``title``, else its focused window."""
         raise NotImplementedError
 
     # Driver calls, on elements as {"id", "role", "name", "value", "actions"}.
-    def elements(self) -> list[dict]:
+    def elements(self, again: bool = False) -> list[dict]:
+        """The window's elements. In agent mode, the snapshot the agent holds (the last
+        action's settled one); ``again`` when what it wants is not there yet, which settles
+        on it once more. Otherwise a new observation either way."""
         raise NotImplementedError
 
     def act(self, element: dict, action: str, **fields: Any) -> str:
@@ -87,16 +97,21 @@ class Agent:
     def find(self, label: str, roles: tuple[str, ...] = (), *, scroll: bool = True) -> dict:
         """The element labeled ``label``; else one showing it as its value (a file name
         in a Finder list is the value of its cell)."""
+        again = False
         for attempt in range(LOOKS):
-            elements = [e for e in self.elements() if not roles or e.get("role") in roles]
+            elements = [e for e in self.elements(again) if not roles or e.get("role") in roles]
             for key in ("name", "value"):
                 for element in elements:
                     if _same(str(element.get(key) or ""), label):
                         return element
-            if scroll and attempt >= 2:
+            # An agent has already waited for the app to settle: one more look, then scroll.
+            if scroll and attempt >= (1 if self.agent_mode else 2):
                 self.scroll("DOWN")
+                again = False
             else:
-                time.sleep(LOOK_PAUSE_S)
+                if not self.agent_mode:
+                    time.sleep(LOOK_PAUSE_S)
+                again = True
         raise StepFailed(f"no {'/'.join(roles) or 'element'} labeled {label!r}")
 
     def _do(self, label: str, roles: tuple[str, ...], action: str, **fields: Any) -> None:
@@ -123,26 +138,33 @@ class Agent:
 
     def wait_for(self, label: str, roles: tuple[str, ...] = (), timeout_s: float = 3.0) -> dict:
         deadline = time.monotonic() + timeout_s
+        again = False
         while time.monotonic() < deadline:
-            for element in self.elements():
+            for element in self.elements(again):
                 if _same(element.get("name"), label) and (not roles or element.get("role") in roles):
                     return element
-            time.sleep(0.03)
+            if not self.agent_mode:
+                time.sleep(0.03)
+            again = True
         raise StepFailed(f"{label!r} did not appear")
 
 
 class ArcAgent(Agent):
     name = "arc"
 
-    def __init__(self) -> None:
+    def __init__(self, *, agent_mode: bool = False) -> None:
         from arc_cua import Driver
 
         self.driver = Driver()
         self.snapshot = None
+        self.agent_mode = agent_mode
+        if agent_mode:
+            self.name = "arc, agent mode"
 
     def attach(self, pid: int, title: str | None = None) -> None:
         from arc_cua import WindowTarget
 
+        self.snapshot = None  # A new app: nothing seen in it yet.
         if title is None:
             self.target = self.driver.target(pid)
             return
@@ -155,27 +177,37 @@ class ArcAgent(Agent):
             time.sleep(0.1)
         raise StepFailed(f"no window titled {title!r}")
 
-    def elements(self) -> list[dict]:
-        self.snapshot = self.driver.observe(self.target)
+    def elements(self, again: bool = False) -> list[dict]:
+        if self.agent_mode and self.snapshot is not None:
+            if again:
+                self.snapshot, _ = self.driver.settle(self.snapshot)
+        else:
+            self.snapshot = self.driver.observe(self.target)
         return [
             {"id": e.id, "role": e.role, "name": e.name, "value": e.value, "actions": [a.value for a in e.actions]}
             for e in self.snapshot.elements
         ]
 
+    def _settled(self, result: Any) -> Any:
+        if self.agent_mode and result.snapshot is not None:
+            self.snapshot = result.snapshot
+        return result
+
     def act(self, element: dict, action: str, **fields: Any) -> str:
-        return self.driver.act(self.snapshot, action, element["id"], **fields).status
+        return self._settled(self.driver.act(self.snapshot, action, element["id"], settle=self.agent_mode,
+                                             **fields)).status
 
     def scroll(self, direction: str = "DOWN") -> None:
-        self.driver.act(self.snapshot, "SCROLL", scroll_direction=direction)
+        self._settled(self.driver.act(self.snapshot, "SCROLL", scroll_direction=direction, settle=self.agent_mode))
 
     def press(self, keys: str) -> None:
-        self.driver.press(self.target, keys)
+        self._settled(self.driver.press(self.target, keys, settle=self.agent_mode))
 
     def type_text(self, text: str) -> None:
-        self.driver.type_text(self.target, text)
+        self._settled(self.driver.type_text(self.target, text, settle=self.agent_mode))
 
     def menu(self, path: str) -> None:
-        self.driver.run_command(self.target.pid, path)
+        self._settled(self.driver.run_command(self.target, path, settle=self.agent_mode))
 
     def release(self, pid: int) -> None:
         self.driver.release(pid)
@@ -189,14 +221,18 @@ class ArcMCPAgent(Agent):
 
     name = "arc (MCP)"
 
-    def __init__(self) -> None:
+    def __init__(self, *, agent_mode: bool = False) -> None:
         from mcp_client import MCPClient
 
         self.client = MCPClient([sys.executable, "-m", "arc_cua", "mcp"])
         self.snapshot: dict = {}
+        self.agent_mode = agent_mode
+        if agent_mode:
+            self.name = "arc (MCP), agent mode"
 
     def attach(self, pid: int, title: str | None = None) -> None:
         self.pid, self.window_id = pid, None
+        self.snapshot = {}  # A new app: nothing seen in it yet.
         if title is None:
             return
         deadline = time.monotonic() + 5
@@ -212,28 +248,39 @@ class ArcMCPAgent(Agent):
     def _where(self) -> dict:
         return {"pid": self.pid, **({"window_id": self.window_id} if self.window_id else {})}
 
-    def elements(self) -> list[dict]:
-        self.snapshot, _, _ = self.client.call("observe", **self._where())
+    def elements(self, again: bool = False) -> list[dict]:
+        if self.agent_mode and self.snapshot:
+            if again:
+                self.snapshot, _, _ = self.client.call("settle", snapshot=self.snapshot["snapshot"])
+        else:
+            self.snapshot, _, _ = self.client.call("observe", **self._where())
         if self.window_id is None:
             self.window_id = self.snapshot.get("window_id")
         return self.snapshot["elements"]
 
+    def _call(self, tool: str, **arguments: Any) -> dict:
+        if self.agent_mode:
+            arguments["settle"] = True
+        result, _, _ = self.client.call(tool, **arguments)
+        if self.agent_mode and "fresh" in result:
+            self.snapshot = result["fresh"]
+        return result
+
     def act(self, element: dict, action: str, **fields: Any) -> str:
-        result, _, _ = self.client.call("act", snapshot=self.snapshot["snapshot"], action=action,
-                                        element=element["id"], **fields)
-        return result["status"]
+        return self._call("act", snapshot=self.snapshot["snapshot"], action=action, element=element["id"],
+                          **fields)["status"]
 
     def scroll(self, direction: str = "DOWN") -> None:
-        self.client.call("act", snapshot=self.snapshot["snapshot"], action="SCROLL", direction=direction)
+        self._call("act", snapshot=self.snapshot["snapshot"], action="SCROLL", direction=direction)
 
     def press(self, keys: str) -> None:
-        self.client.call("press", keys=keys, **self._where())
+        self._call("press", keys=keys, **self._where())
 
     def type_text(self, text: str) -> None:
-        self.client.call("type_text", text=text, **self._where())
+        self._call("type_text", text=text, **self._where())
 
     def menu(self, path: str) -> None:
-        self.client.call("run_command", pid=self.pid, path=path)
+        self._call("run_command", pid=self.pid, path=path)
 
     def close(self) -> None:
         self.client.close()
@@ -727,9 +774,13 @@ def main(argv: list[str] | None = None, agents: list[Agent] | None = None) -> Pa
                         help="runs per workflow and driver (the first is reported apart)")
     parser.add_argument("--only", nargs="*", help="workflow names, or parts of them")
     parser.add_argument("--no-mcp", action="store_true", help="only arc in-process")
+    parser.add_argument("--agent-mode", action="store_true",
+                        help="also run each agent as a model-driven agent works: settle after every action")
     args = parser.parse_args(argv)
     if agents is None:
         agents = [ArcAgent()] + ([] if args.no_mcp else [ArcMCPAgent()])
+        if args.agent_mode:
+            agents += [ArcAgent(agent_mode=True)] + ([] if args.no_mcp else [ArcMCPAgent(agent_mode=True)])
     chosen = [w for w in WORKFLOWS if not args.only or any(part in w.name for part in args.only)]
     rows = []
     try:

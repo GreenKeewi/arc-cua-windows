@@ -21,6 +21,8 @@ from .models import (
 )
 from .protocols import DecisionPolicy, DesktopBackend
 from .safety import RISKY_KINDS, disallowed_risks, redact
+from .settling import SettleTiming, wait_for_quiet
+from .settling import snapshot_signature as _structural_signature
 from .validation import materialize_action
 
 logger = logging.getLogger(__name__)
@@ -111,28 +113,8 @@ class DesktopExecutor:
         # A backend whose content arrives over the network (web pages) can need longer
         # than native UI; it may raise, never lower, the configured cap.
         timeout_s = max(config.settle_timeout_s, getattr(self.backend, "settle_timeout_s", 0.0) or 0.0)
-        started = time.perf_counter()
-        previous = before_probe
-        changed = False
-        quiet_since = started
-        while True:
-            time.sleep(config.settle_poll_s)
-            current = self._probe()
-            now = time.perf_counter()
-            if current is None:
-                break
-            if current != previous:
-                changed = changed or current != before_probe
-                quiet_since = now
-            previous = current
-            elapsed = now - started
-            if elapsed >= timeout_s:
-                break
-            if changed and now - quiet_since >= config.settle_quiet_s:
-                break
-            if not changed and elapsed >= config.settle_reaction_s:
-                break
-        return previous
+        timing = SettleTiming(config.settle_reaction_s, config.settle_quiet_s, timeout_s, config.settle_poll_s)
+        return wait_for_quiet(self._probe, before_probe, timing).last
 
     def _execute(self, before: DesktopSnapshot, action: ExecutableAction, before_probe: Any) -> Any:
         """Execute the action; return the probe to settle against afterwards."""
@@ -480,49 +462,6 @@ class DesktopExecutor:
                 result = event.result
         assert result is not None
         return result
-
-
-def _structural_signature(
-    snapshot: DesktopSnapshot,
-) -> tuple:
-    # Stable representation used only for post-action settling.
-    #
-    # For OCR, ignore recognized text, confidence, and tiny geometry changes.
-    # Those can vary between Apple Vision passes even when the UI is identical.
-    #
-    # For semantic accessibility elements, include value/state because those
-    # changes are meaningful.
-
-    rows = []
-
-    for element in snapshot.elements:
-        if not element.visible:
-            continue
-
-        if element.source == "macos_ocr":
-            rows.append(
-                (
-                    element.id,
-                    element.role,
-                    element.source,
-                    tuple(action.value for action in element.actions),
-                )
-            )
-        else:
-            rows.append(
-                (
-                    element.id,
-                    element.role,
-                    element.source,
-                    str(element.value),
-                    element.focused,
-                    element.selected,
-                    element.expanded,
-                    tuple(action.value for action in element.actions),
-                )
-            )
-
-    return tuple(sorted(rows))
 
 
 def _planned_action(action: ExecutableAction, snapshot: DesktopSnapshot) -> dict[str, Any]:

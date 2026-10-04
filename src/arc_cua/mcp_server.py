@@ -4,8 +4,8 @@ Any MCP client (Claude Code, Codex, an agent of your own) can observe and act on
 macOS apps in the background through it. MCP's stdio transport is JSON-RPC with
 one message per line, implemented here directly.
 
-Tools: ``status``, ``apps``, ``windows``, ``observe``, ``act``, ``wait``, ``commands``,
-``run_command`` and ``release``; for what accessibility does not cover, ``screenshot``, ``click_at``,
+Tools: ``status``, ``apps``, ``windows``, ``observe``, ``act``, ``settle``, ``wait``,
+``commands``, ``run_command`` and ``release``; for what accessibility does not cover, ``screenshot``, ``click_at``,
 ``drag``, ``scroll_at``, ``press`` and ``type_text`` at points in the window.
 
 An observation returns a snapshot id and the window's elements, each with an id
@@ -15,7 +15,8 @@ went), ``act`` does not act and returns a fresh snapshot instead.
 
 Requests run one at a time, in order, on the main thread. A reader thread takes
 ``notifications/cancelled`` as it arrives: a cancelled ``wait`` returns early, a
-cancelled action that has not started is not performed, a cancelled request still
+cancelled action that has not started is not performed (one that has, stops
+waiting for the app to settle), a cancelled request still
 queued is skipped, and none of them gets a response. ``ping`` is answered at once,
 even while a request runs.
 """
@@ -47,11 +48,22 @@ INSTRUCTIONS = (
     "observe(pid, window_id) reads a particular one. Then act(snapshot, action, element). If act returns "
     "status 'changed' or 'stale', "
     "the app changed under the snapshot and nothing was done: decide again from the fresh snapshot it "
-    "returns. commands(pid) lists the app's menu commands; run_command(pid, path) runs one. "
+    "returns. Pass settle: true to act or an input tool to wait until the app has finished reacting and "
+    "get a fresh snapshot back; settled.reacted false means the app did not react. "
+    "commands(pid) lists the app's menu commands; run_command(pid, path) runs one. "
     "When a result says parked, a window was moved out of sight to work in it; release(pid) puts it back."
 )
 
 _ACTIONS = [kind.value for kind in ActionKind]
+_SETTLE = {
+    "settle": {
+        "type": "boolean",
+        "description": (
+            "After acting, wait until the app has finished reacting (up to 2 s) and return a fresh snapshot "
+            "of the window, with settled: reacted, timed_out, elapsed_ms."
+        ),
+    },
+}
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -122,8 +134,30 @@ TOOLS: list[dict[str, Any]] = [
                 "hotkey": {"type": "string"},
                 "direction": {"type": "string", "enum": ["UP", "DOWN", "LEFT", "RIGHT"]},
                 "modifier": {"type": "string", "enum": ["MOD", "SHIFT"]},
+                **_SETTLE,
             },
             "required": ["snapshot", "action"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "settle",
+        "description": (
+            "Wait until the snapshot's app has finished reacting, then return a fresh snapshot of its window "
+            "with settled: reacted (whether the app reacted since the snapshot), timed_out, elapsed_ms. "
+            "Use it when an app shows its result late, after an action that already settled. With no "
+            "reaction it returns after reaction_s (default 0.6); after one, once quiet_s (default 0.15) "
+            "pass without another; never after more than timeout_s (default 2)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "snapshot": {"type": "string"},
+                "reaction_s": {"type": "number", "minimum": 0, "maximum": 30},
+                "quiet_s": {"type": "number", "minimum": 0, "maximum": 30},
+                "timeout_s": {"type": "number", "minimum": 0, "maximum": 30},
+            },
+            "required": ["snapshot"],
             "additionalProperties": False,
         },
     },
@@ -169,6 +203,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "pid": {"type": "integer"},
                 "path": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                **_SETTLE,
             },
             "required": ["pid", "path"],
             "additionalProperties": False,
@@ -200,6 +235,7 @@ _RAW_COMMON = {
         "description": "Send the input to this snapshot's window, and refuse it if the app changed since.",
     },
 }
+_INPUT_COMMON = {**_RAW_COMMON, **_SETTLE}
 
 RAW_TOOLS: list[dict[str, Any]] = [
     {
@@ -227,7 +263,7 @@ RAW_TOOLS: list[dict[str, Any]] = [
                 "button": {"type": "string", "enum": ["left", "right"]},
                 "count": {"type": "integer", "minimum": 1, "maximum": 3},
                 "modifiers": {"type": "array", "items": {"type": "string", "enum": ["MOD", "SHIFT", "ALT", "CTRL"]}},
-                **_RAW_COMMON,
+                **_INPUT_COMMON,
             },
             "required": ["pid", "x", "y"],
             "additionalProperties": False,
@@ -247,7 +283,7 @@ RAW_TOOLS: list[dict[str, Any]] = [
                     "type": "array", "minItems": 2,
                     "items": {"type": "array", "items": _POINT, "minItems": 2, "maxItems": 2},
                 },
-                **_RAW_COMMON,
+                **_INPUT_COMMON,
             },
             "required": ["pid", "points"],
             "additionalProperties": False,
@@ -259,7 +295,7 @@ RAW_TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "pid": {"type": "integer"}, "x": _POINT, "y": _POINT, "dx": _POINT, "dy": _POINT, **_RAW_COMMON,
+                "pid": {"type": "integer"}, "x": _POINT, "y": _POINT, "dx": _POINT, "dy": _POINT, **_INPUT_COMMON,
             },
             "required": ["pid", "x", "y"],
             "additionalProperties": False,
@@ -270,7 +306,7 @@ RAW_TOOLS: list[dict[str, Any]] = [
         "description": "Press a key (ENTER, TAB, ESCAPE, ARROW_DOWN...) or a chord (MOD+S; MOD is Command) in the app.",
         "inputSchema": {
             "type": "object",
-            "properties": {"pid": {"type": "integer"}, "keys": {"type": "string"}, **_RAW_COMMON},
+            "properties": {"pid": {"type": "integer"}, "keys": {"type": "string"}, **_INPUT_COMMON},
             "required": ["pid", "keys"],
             "additionalProperties": False,
         },
@@ -282,7 +318,7 @@ RAW_TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"pid": {"type": "integer"}, "text": {"type": "string"}, **_RAW_COMMON},
+            "properties": {"pid": {"type": "integer"}, "text": {"type": "string"}, **_INPUT_COMMON},
             "required": ["pid", "text"],
             "additionalProperties": False,
         },
@@ -414,6 +450,8 @@ class Server:
             response["changes"] = list(result.changes)
         if result.snapshot is not None:
             response["fresh"] = self._render(result.snapshot)
+        if result.settled is not None:
+            response["settled"] = _settled(result.settled)
         if self.driver.parked(pid):
             response["parked"] = True
         return response
@@ -430,48 +468,59 @@ class Server:
 
     def tool_click_at(
         self, pid: int, x: float, y: float, button: str = "left", count: int = 1, modifiers: list[str] | None = None,
-        window_id: int | None = None, snapshot: str | None = None,
+        window_id: int | None = None, snapshot: str | None = None, settle: bool = False,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
         return self._act_result(self.driver.click_at(
-            where, x, y, button=button, count=count, modifiers=tuple(modifiers or ()), snapshot=kept,
+            where, x, y, button=button, count=count, modifiers=tuple(modifiers or ()), snapshot=kept, settle=settle,
         ), pid)
 
     def tool_drag(
         self, pid: int, points: list[list[float]], window_id: int | None = None, snapshot: str | None = None,
+        settle: bool = False,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._act_result(self.driver.drag(where, points, snapshot=kept), pid)
+        return self._act_result(self.driver.drag(where, points, snapshot=kept, settle=settle), pid)
 
     def tool_scroll_at(
         self, pid: int, x: float, y: float, dx: float = 0, dy: float = 0, window_id: int | None = None,
-        snapshot: str | None = None,
+        snapshot: str | None = None, settle: bool = False,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._act_result(self.driver.scroll_at(where, x, y, dx=dx, dy=dy, snapshot=kept), pid)
+        return self._act_result(self.driver.scroll_at(where, x, y, dx=dx, dy=dy, snapshot=kept, settle=settle), pid)
 
     def tool_press(
-        self, pid: int, keys: str, window_id: int | None = None, snapshot: str | None = None,
+        self, pid: int, keys: str, window_id: int | None = None, snapshot: str | None = None, settle: bool = False,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._act_result(self.driver.press(where, keys, snapshot=kept), pid)
+        return self._act_result(self.driver.press(where, keys, snapshot=kept, settle=settle), pid)
 
     def tool_type_text(
-        self, pid: int, text: str, window_id: int | None = None, snapshot: str | None = None,
+        self, pid: int, text: str, window_id: int | None = None, snapshot: str | None = None, settle: bool = False,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._act_result(self.driver.type_text(where, text, snapshot=kept), pid)
+        return self._act_result(self.driver.type_text(where, text, snapshot=kept, settle=settle), pid)
 
     def tool_act(
         self, snapshot: str, action: str, element: str | None = None, value: Any = None, key: str | None = None,
-        hotkey: str | None = None, direction: str | None = None, modifier: str | None = None,
+        hotkey: str | None = None, direction: str | None = None, modifier: str | None = None, settle: bool = False,
     ) -> dict[str, Any]:
         kept = self._snapshot(snapshot)
         result = self.driver.act(
             kept, action, element, value=value, key=key, hotkey=hotkey,
-            scroll_direction=direction, click_modifier=modifier,
+            scroll_direction=direction, click_modifier=modifier, settle=settle,
         )
         return self._act_result(result, kept.context["pid"])
+
+    def tool_settle(
+        self, snapshot: str, reaction_s: float = 0.6, quiet_s: float = 0.15, timeout_s: float = 2.0,
+    ) -> dict[str, Any]:
+        fresh, report = self.driver.settle(
+            self._snapshot(snapshot), reaction_s=reaction_s, quiet_s=quiet_s, timeout_s=timeout_s,
+        )
+        result = self._render(fresh) if fresh is not None else {"window_gone": True}
+        result["settled"] = _settled(report)
+        return result
 
     def tool_wait(self, snapshot: str, timeout_s: float = 1.0) -> dict[str, Any]:
         return self._render(self.driver.wait(self._snapshot(snapshot), timeout_s=timeout_s))
@@ -479,9 +528,14 @@ class Server:
     def tool_commands(self, pid: int, query: str | None = None) -> dict[str, Any]:
         return {"commands": [c.compact() for c in self.driver.commands(pid, query=query)]}
 
-    def tool_run_command(self, pid: int, path: str | list[str]) -> dict[str, Any]:
-        result = self.driver.run_command(pid, path)
-        return {"status": result.status, "elapsed_ms": round(result.elapsed_ms, 1)}
+    def tool_run_command(self, pid: int, path: str | list[str], settle: bool = False) -> dict[str, Any]:
+        result = self.driver.run_command(pid, path, settle=settle)
+        response: dict[str, Any] = {"status": result.status, "elapsed_ms": round(result.elapsed_ms, 1)}
+        if result.settled is not None:
+            response["settled"] = _settled(result.settled)
+        if result.snapshot is not None:
+            response["fresh"] = self._render(result.snapshot)
+        return response
 
     def tool_release(self, pid: int | None = None) -> dict[str, Any]:
         if pid is None:
@@ -631,6 +685,10 @@ def _element(element: Any) -> dict[str, Any]:
     if element.parent_id:
         data["parent"] = element.parent_id
     return data
+
+
+def _settled(report: Any) -> dict[str, Any]:
+    return {"reacted": report.reacted, "timed_out": report.timed_out, "elapsed_ms": report.elapsed_ms}
 
 
 def _key(ident: Any) -> str:

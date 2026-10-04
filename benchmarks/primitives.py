@@ -332,6 +332,15 @@ class ArcDriver:
         snapshot = executor._observe_after_action(before=observation.raw, action=action, before_probe=probe)
         return Observation(len(snapshot.elements), len(json.dumps(snapshot.compact())), snapshot, snapshot.window)
 
+    def click_settled(self, pid: int, observation: Observation, element: Any) -> Observation:
+        """Click with ``settle=True``: the session waits for the app to react and go quiet."""
+        assert self.session is not None
+        result = self.session.act(observation.raw, ActionKind.CLICK, element.id, settle=True)
+        if not result.done:
+            raise StaleScreen(result)
+        snapshot = result.snapshot
+        return Observation(len(snapshot.elements), len(json.dumps(snapshot.compact())), snapshot, snapshot.window)
+
     def shows(self, observation: Observation, text: str) -> bool:
         return any(text in (e.name, str(e.value)) for e in observation.raw.elements)
 
@@ -410,6 +419,11 @@ class ArcMCPDriver:
         self.click(pid, observation, element)
         content, size, _ = self.client.call("wait", snapshot=observation.raw["snapshot"], timeout_s=1.0)
         return Observation(len(content.get("elements", [])), size, content, str(content.get("window", "")))
+
+    def click_settled(self, pid: int, observation: Observation, element: Any) -> Observation:
+        content = self._act(observation, element, "CLICK", settle=True)
+        fresh = content["fresh"]
+        return Observation(len(fresh.get("elements", [])), len(json.dumps(fresh)), fresh, str(fresh.get("window", "")))
 
     def shows(self, observation: Observation, text: str) -> bool:
         return any(text in (e.get("name"), str(e.get("value"))) for e in observation.raw.get("elements", []))
@@ -697,8 +711,13 @@ def scenario_settle(drivers, reps, results, invariants) -> None:
     cases = [("checkbox (changes at once)", "Subscribe", None)] + [
         (f"sheet after {delay} ms", f"Open {delay} ms", delay) for delay in (0, 300, 800, 1500)
     ]
+    # Each driver as it waits by default, and arc's sessions also with settle: true.
+    runs = [(driver, driver.name, driver.click_and_settle) for driver in drivers] + [
+        (driver, f"{driver.name}, settle: true", driver.click_settled)
+        for driver in drivers if getattr(driver, "session", True) is not None and hasattr(driver, "click_settled")
+    ]
     for label, button, delay in cases:
-        for driver in drivers:
+        for driver, name, click_and_settle in runs:
             fixture = Fixture()
             pid = fixture.pid
             series, appeared = Series(), Series()
@@ -714,7 +733,7 @@ def scenario_settle(drivers, reps, results, invariants) -> None:
                     target = driver.find(observation, "CheckBox" if delay is None else "Button", button)
                     started = time.perf_counter()
                     after = invariants.around(
-                        f"{driver.name} settle", lambda: driver.click_and_settle(pid, observation, target),
+                        f"{name} settle", lambda: click_and_settle(pid, observation, target),
                     )
                     series.add((time.perf_counter() - started) * 1000)
                     seen = watcher.result(timeout_s=4)
@@ -739,13 +758,13 @@ def scenario_settle(drivers, reps, results, invariants) -> None:
                         time.sleep(0.5)
                     caught += shown
             except (MCPError, LookupError, RuntimeError) as exc:
-                results.append({"scenario": "act, settle, observe", "target": label, "driver": driver.name,
+                results.append({"scenario": "act, settle, observe", "target": label, "driver": name,
                                 "error": str(exc)[:160]})
                 continue
             finally:
                 driver.forget(pid)
                 fixture.close()
-            row = {"scenario": "act, settle, observe", "target": label, "driver": driver.name}
+            row = {"scenario": "act, settle, observe", "target": label, "driver": name}
             row.update(series.summary())
             appeared_at = appeared.summary().get("median_ms")
             row["success"] = f"next observation shows it {caught}/{reps}" + (

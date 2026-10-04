@@ -46,6 +46,30 @@ class Desktop:
         self.focused = A
         self.sheet = False
         self.executed: list[tuple[int, ActionKind, str | None]] = []
+        # Seconds after each input at which the app posts an accessibility notification.
+        self.reaction: tuple[float, ...] = ()
+        self.closes_on_input: int | None = None  # A window the next input closes.
+        self.notifications_available = True
+        self.shows_presses = False  # Submit shows how often it was pressed, unannounced (a web checkbox).
+        self.presses = 0
+        self.web = False  # The window shows a web page.
+        self.out_of_sight: set[int] = set()  # Minimized windows, or a hidden app's.
+        self._posts: list[float] = []
+
+    def input(self) -> None:
+        self.presses += 1
+        now = time.monotonic()
+        self._posts += [now + delay for delay in self.reaction]
+        if self.closes_on_input is not None:
+            del self.windows[self.closes_on_input]
+            self.focused = next(iter(self.windows))
+            self.closes_on_input = None
+
+    def notifications(self) -> int | None:
+        if not self.notifications_available:
+            return None
+        now = time.monotonic()
+        return sum(at <= now for at in self._posts)
 
 
 class FakeBackend:
@@ -61,7 +85,14 @@ class FakeBackend:
             raise TargetUnavailable(f"window {window_id} is gone")
         self.observed = window_id
         prefix = "a" if window_id == A else "b"
-        elements = [DesktopElement(id=f"{prefix}_submit", role="Button", name="Submit", actions=(ActionKind.CLICK,))]
+        value = str(self.desktop.presses) if self.desktop.shows_presses else None
+        elements = [DesktopElement(id=f"{prefix}_submit", role="Button", name="Submit", value=value,
+                                   actions=(ActionKind.CLICK,))]
+        if self.desktop.web:
+            elements.append(DesktopElement(id=f"{prefix}_page", role="WebArea", name="Page"))
+        if window_id in self.desktop.out_of_sight:
+            # A window out of sight reads differently from one on a display.
+            elements.append(DesktopElement(id=f"{prefix}_placeholder", role="Group"))
         if window_id == A and self.desktop.sheet:
             elements.append(DesktopElement(id="a_close", role="Button", name="Close", actions=(ActionKind.CLICK,)))
         return DesktopSnapshot(
@@ -75,6 +106,7 @@ class FakeBackend:
         # A backend acts on the elements of its own last observation.
         assert self.observed == snapshot.context["window_id"]
         self.desktop.executed.append((snapshot.context["window_id"], action.kind, action.target_id))
+        self.desktop.input()
 
 
 class FakeMacOSApp:
@@ -91,10 +123,14 @@ class FakeMacOSApp:
         return window_id in self.desktop.windows
 
     def on_display(self, window_id: int) -> bool:
-        return window_id in self.desktop.windows
+        return window_id in self.desktop.windows and window_id not in self.desktop.out_of_sight
 
     def open(self, window_id: int | None = None) -> None:
         self.parked.append(window_id)
+        if window_id in self.desktop.out_of_sight:
+            # Moving the window onto the invisible display shows the app, which it announces.
+            self.desktop.out_of_sight.discard(window_id)
+            self.journal.add("AXApplicationShown", "AXApplication")
 
     def window(self, window_id: int):
         if window_id not in self.desktop.windows:
@@ -105,9 +141,11 @@ class FakeMacOSApp:
 
     def click(self, bounds, *, count=1, right=False, flags=0, window_id=None):
         self.inputs.append(("click", window_id, bounds.x, bounds.y))
+        self.desktop.input()
 
     def type_text(self, text, *, window_id=None):
         self.inputs.append(("type", window_id, text))
+        self.desktop.input()
 
     def input_scope(self):
         from contextlib import nullcontext
@@ -120,6 +158,7 @@ class FakeApp:
         self.desktop = Desktop()
         self.journal = FakeJournal()
         self.app = FakeMacOSApp(self.desktop)
+        self.app.journal = self.journal
         self.backends: dict[int, FakeBackend] = {}
         self.resolved = 0
         self.closed = False
@@ -130,6 +169,12 @@ class FakeApp:
 
     def backend(self, window_id: int) -> FakeBackend:
         return self.backends.setdefault(window_id, FakeBackend(self.desktop))
+
+    def settle_probe(self, *, wait: bool = True) -> int | None:
+        return self.desktop.notifications()
+
+    def watch_web_areas(self, window_id: int, snapshot) -> None:
+        pass
 
     def close(self) -> None:
         self.closed = True
@@ -357,6 +402,151 @@ def test_a_cancelled_action_is_not_performed(driver):
     with pytest.raises(Cancelled):
         driver.type_text(PID, "hi", snapshot=snapshot)
     assert app(driver).desktop.executed == [] and app(driver).app.inputs == []
+
+
+def test_moving_a_hidden_window_onto_the_invisible_display_does_not_refuse_its_input(driver):
+    app(driver).desktop.out_of_sight.add(A)
+    snapshot = driver.observe(PID)
+    result = driver.type_text(PID, "hi", snapshot=snapshot)
+    assert result.done
+    assert app(driver).app.parked == [A] and app(driver).app.inputs == [("type", A, "hi")]
+
+
+# ---- settling ----------------------------------------------------------------------
+
+
+def test_an_action_without_settle_does_not_wait(driver):
+    app(driver).desktop.reaction = (0.01, 0.03)
+    result = driver.act(driver.observe(PID), "CLICK", "a_submit")
+    assert result.settled is None and result.snapshot is None
+    assert result.elapsed_ms < 100
+
+
+def test_settle_returns_soon_after_the_app_goes_quiet(driver):
+    app(driver).desktop.reaction = (0.01, 0.03, 0.05)
+    snapshot = driver.observe(PID)
+    result = driver.act(snapshot, "CLICK", "a_submit", settle=True)
+    assert result.done
+    assert result.settled.reacted is True and result.settled.timed_out is False
+    # The last notification at 50 ms, then 150 ms of quiet: well under the 600 ms reaction window.
+    assert 180 <= result.settled.elapsed_ms < 450
+    assert result.snapshot.context["window_id"] == A
+
+
+def test_settle_reports_no_reaction_after_the_reaction_window(driver):
+    result = driver.act(driver.observe(PID), "CLICK", "a_submit", settle=True)
+    assert result.done and app(driver).desktop.executed
+    assert result.settled.reacted is False and result.settled.timed_out is False
+    assert 600 <= result.settled.elapsed_ms < 900
+    assert result.snapshot is not None
+
+
+def test_settle_is_bounded_by_its_timeout_while_the_app_keeps_reacting(driver):
+    app(driver).desktop.reaction = tuple(i * 0.01 for i in range(1, 100))
+    snapshot = driver.observe(PID)
+    driver.act(snapshot, "CLICK", "a_submit")
+    fresh, settled = driver.settle(snapshot, timeout_s=0.2)
+    assert settled.reacted is True and settled.timed_out is True
+    assert 200 <= settled.elapsed_ms < 400
+
+
+def test_a_late_reaction_is_caught_by_settling_again(driver):
+    # The Finder New Folder case: the app reacts, pauses while it works, then shows the result.
+    app(driver).desktop.reaction = (0.01, 0.5)
+    result = driver.act(driver.observe(PID), "CLICK", "a_submit", settle=True)
+    assert result.settled.reacted is True and result.settled.elapsed_ms < 400
+    fresh, settled = driver.settle(result.snapshot)
+    assert settled.reacted is True
+    assert fresh.context["window_id"] == A
+
+
+def test_settle_counts_a_reaction_that_came_before_it_was_called(driver):
+    app(driver).desktop.reaction = (0.01,)
+    snapshot = driver.observe(PID)
+    driver.act(snapshot, "CLICK", "a_submit")
+    time.sleep(0.05)
+    fresh, settled = driver.settle(snapshot)
+    assert settled.reacted is True
+    assert settled.elapsed_ms < 400  # Only the quiet period, not the reaction window.
+
+
+def test_raw_input_can_settle(driver):
+    app(driver).desktop.reaction = (0.01,)
+    snapshot = driver.observe(PID)
+    result = driver.click_at(PID, 10, 20, snapshot=snapshot, settle=True)
+    assert result.settled.reacted is True
+    assert result.snapshot.context["window_id"] == A
+
+
+def test_a_refused_action_does_not_settle(driver):
+    snapshot = driver.observe(PID)
+    app(driver).desktop.sheet = True
+    app(driver).journal.add("AXSheetCreated")
+    result = driver.act(snapshot, "CLICK", "a_submit", settle=True)
+    assert result.status == "changed" and result.settled is None
+
+
+def test_an_action_that_closes_its_window_settles_on_the_apps_window(driver):
+    snapshot = driver.observe(WindowTarget(PID, B))
+    app(driver).desktop.closes_on_input = B
+    result = driver.act(snapshot, "CLICK", "b_submit", settle=True)
+    assert result.done and result.snapshot.context["window_id"] == A
+
+
+def test_a_change_no_notification_announced_still_counts_as_a_reaction(driver):
+    app(driver).desktop.shows_presses = True
+    result = driver.act(driver.observe(PID), "CLICK", "a_submit", settle=True)
+    assert result.settled.reacted is True
+    assert 600 <= result.settled.elapsed_ms  # It waited out the reaction window first.
+
+
+def test_on_a_web_page_an_unannounced_change_is_seen_without_waiting_out_the_reaction_window(driver):
+    app(driver).desktop.web = True
+    result = driver.act(driver.observe(PID), "CLICK", "a_submit", settle=True)
+    assert result.settled.reacted is False  # The page looks the same: no reaction.
+    app(driver).desktop.shows_presses = True
+    result = driver.act(result.snapshot, "CLICK", "a_submit", settle=True)
+    assert result.settled.reacted is True
+    assert result.settled.elapsed_ms < 450
+
+
+def test_web_areas_are_watched_once_each():
+    from types import SimpleNamespace
+
+    from arc_cua.driver import _App
+
+    watched = []
+    app = object.__new__(_App)
+    app.events = SimpleNamespace(watch_element=lambda ref, names: watched.append((ref, names)))
+    app._web_areas = set()
+    app.backend = lambda window_id: SimpleNamespace(_refs={"w1": "web area ref", "b1": "button ref"})
+    snapshot = DesktopSnapshot(application="Page", window="Page", revision="1", elements=(
+        DesktopElement(id="w1", role="WebArea", name="Page"),
+        DesktopElement(id="b1", role="Button", name="Go", actions=(ActionKind.CLICK,)),
+    ))
+    app.watch_web_areas(A, snapshot)
+    app.watch_web_areas(A, snapshot)
+    assert [ref for ref, _ in watched] == ["web area ref"]
+    assert "AXLayoutComplete" in watched[0][1]
+
+
+def test_without_notifications_settle_does_not_wait_and_says_so(driver):
+    app(driver).desktop.notifications_available = False
+    result = driver.act(driver.observe(PID), "CLICK", "a_submit", settle=True)
+    assert result.settled.reacted is None and result.settled.elapsed_ms == 0
+    assert result.snapshot is not None
+
+
+def test_a_cancelled_settle_stops_waiting(driver):
+    app(driver).desktop.reaction = tuple(i * 0.01 for i in range(1, 300))
+    snapshot = driver.observe(PID)
+    threading.Timer(0.1, driver.cancelled.set).start()
+    started = time.monotonic()
+    with pytest.raises(Cancelled):
+        driver.act(snapshot, "CLICK", "a_submit", settle=True)
+    assert time.monotonic() - started < 0.5
+    assert app(driver).desktop.executed  # The action itself was done.
+    assert not driver.cancelled.is_set()
 
 
 # ---- errors -----------------------------------------------------------------------

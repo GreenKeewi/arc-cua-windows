@@ -44,16 +44,19 @@ class AXEventMonitor:
         self._requested_pid: int | None = None
         self._ready = threading.Event()
         self._failed = False
+        self._closed = threading.Event()
         self._thread: threading.Thread | None = None
+        self._elements: list[tuple[Any, tuple[str, ...]]] = []  # Waiting to be subscribed to.
 
     @property
     def count(self) -> int:
         with self._lock:
             return self._count
 
-    def watch(self, pid: int) -> bool:
-        """Watch ``pid``; returns False when notifications are unavailable."""
-        if self._failed:
+    def watch(self, pid: int, *, timeout_s: float = 0.2) -> bool:
+        """Watch ``pid``; returns False when notifications are unavailable, or not yet
+        subscribed after ``timeout_s`` (0 starts watching without waiting)."""
+        if self._failed or self._closed.is_set():
             return False
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="arc-cua-ax-events", daemon=True)
@@ -63,10 +66,20 @@ class AXEventMonitor:
         if self._pid == pid:
             return True
         # The monitor thread switches apps on its next loop turn (<= ~20 ms).
-        deadline = time.monotonic() + 0.2
+        deadline = time.monotonic() + timeout_s
         while self._pid != pid and time.monotonic() < deadline and not self._failed:
             time.sleep(0.005)
         return self._pid == pid
+
+    def watch_element(self, element: Any, notifications: tuple[str, ...]) -> None:
+        """Also count ``notifications`` posted on ``element`` of the watched app. A web
+        page posts its notifications on its web area, not on the application."""
+        with self._lock:
+            self._elements.append((element, notifications))
+
+    def close(self) -> None:
+        """Stop watching; the background thread ends within one loop turn."""
+        self._closed.set()
 
     def _record(self) -> None:
         with self._lock:
@@ -94,7 +107,7 @@ class AXEventMonitor:
 
         loop = CFRunLoopGetCurrent()
         observer = source = None
-        while True:
+        while not self._closed.is_set():
             with self._lock:
                 wanted = self._requested_pid
             if wanted is not None and wanted != self._pid:
@@ -112,4 +125,12 @@ class AXEventMonitor:
                 else:
                     logger.debug("AXObserverCreate failed pid=%s error=%s", wanted, error)
                 self._pid = wanted
+            if observer is not None and self._elements:
+                with self._lock:
+                    elements, self._elements = self._elements, []
+                for element, names in elements:
+                    for name in names:
+                        AS.AXObserverAddNotification(observer, element, name, None)
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, False)
+        if source is not None:
+            CFRunLoopRemoveSource(loop, source, kCFRunLoopDefaultMode)

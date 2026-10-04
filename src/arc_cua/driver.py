@@ -18,7 +18,8 @@ against the app as it is when the action runs, not as it was observed:
 
 A window that is gone (closed, or replaced by a new one) raises TargetUnavailable;
 target the app again to find its window. Nothing waits after an action by
-default; use ``wait`` when the caller expects the app to take a while to react.
+default. With ``settle=True`` an action waits until the app has finished reacting
+(see ``settle``) and returns a fresh snapshot; ``wait`` waits for a structural change.
 """
 
 from __future__ import annotations
@@ -39,12 +40,18 @@ from .errors import (
     TargetUnavailable,
 )
 from .models import ActionKind, Bounds, DesktopSnapshot, ExecutableAction
+from .settling import SettleTiming, snapshot_signature, wait_for_quiet
 
 _TARGETED = frozenset({
     ActionKind.CLICK, ActionKind.DOUBLE_CLICK, ActionKind.RIGHT_CLICK, ActionKind.TYPE_TEXT,
     ActionKind.SET_VALUE, ActionKind.DRAG_TO, ActionKind.DRAG_BY,
 })
 _MARKER = "changes_seen"
+_COUNT = "notifications_seen"
+# A web page posts these on its web area; AXLayoutComplete follows most changes to a page.
+_WEB_NOTIFICATIONS = ("AXValueChanged", "AXSelectedTextChanged", "AXFocusedUIElementChanged", "AXLayoutComplete",
+                      "AXCreated", "AXUIElementDestroyed", "AXSelectedChildrenChanged", "AXRowCountChanged",
+                      "AXTitleChanged")
 FORCE_ACCESSIBILITY = "--force-renderer-accessibility"
 _CANCEL_POLL_S = 0.05
 
@@ -58,11 +65,24 @@ class WindowTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class SettleReport:
+    """How an app reacted while the driver waited for it to settle."""
+
+    # Whether the app posted a notification, or else the window shows something else now.
+    # None: its notifications could not be watched, so nothing was waited for.
+    reacted: bool | None
+    timed_out: bool  # Still reacting when the timeout ended the wait.
+    elapsed_ms: float  # Time spent waiting.
+
+
+@dataclass(frozen=True, slots=True)
 class ActResult:
     status: str  # "done", "changed" (structure changed since the snapshot) or "stale" (target changed)
-    snapshot: DesktopSnapshot | None = None  # A fresh observation when the action did not run.
+    # A fresh observation when the action did not run, or when it ran and settled.
+    snapshot: DesktopSnapshot | None = None
     changes: tuple[str, ...] = ()
     elapsed_ms: float = 0.0
+    settled: SettleReport | None = None  # With settle=True, when the action ran.
 
     @property
     def done(self) -> bool:
@@ -96,9 +116,11 @@ class _App:
         from .backends.macos_app import MacOSApp
         from .backends.macos_ax import MacOSAXBackend
         from .backends.macos_changes import ChangeJournal
+        from .backends.macos_events import AXEventMonitor
 
         # Journal first, so nothing that happens during the first observation is missed.
         self.journal = ChangeJournal(pid)
+        self.events = AXEventMonitor()
         try:
             self.app = MacOSApp(pid)
             self._backend_class = MacOSAXBackend
@@ -106,8 +128,10 @@ class _App:
             self._resolver.open()
         except BaseException:
             self.journal.close()
+            self.events.close()
             raise
         self._backends: dict[int, Any] = {}
+        self._web_areas: set[str] = set()
 
     def resolve_window(self) -> int:
         return self._resolver.resolve_window()
@@ -118,8 +142,23 @@ class _App:
             backend = self._backends[window_id] = self._backend_class(self.app.pid, app=self.app)
         return backend
 
+    def settle_probe(self, *, wait: bool = True) -> int | None:
+        """The app's count of accessibility notifications; None when they cannot be
+        watched, or, with ``wait=False``, are not watched yet (watching starts)."""
+        return self.events.count if self.events.watch(self.app.pid, timeout_s=0.2 if wait else 0) else None
+
+    def watch_web_areas(self, window_id: int, snapshot: DesktopSnapshot) -> None:
+        """Count the notifications of the web pages in a snapshot, which they post on
+        their web areas rather than on the app."""
+        refs = getattr(self.backend(window_id), "_refs", {})
+        for element in snapshot.elements:
+            if element.role == "WebArea" and element.id not in self._web_areas and element.id in refs:
+                self._web_areas.add(element.id)
+                self.events.watch_element(refs[element.id], _WEB_NOTIFICATIONS)
+
     def close(self) -> None:
         self.journal.close()
+        self.events.close()
         for backend in (*self._backends.values(), self._resolver):
             backend.close()
 
@@ -250,8 +289,12 @@ class Driver:
         app = self._app(target.pid)
         # Read the journal before the walk: a change during the walk counts as after it.
         marker = app.journal.sequence
+        count = app.settle_probe(wait=False)
         snapshot = app.backend(target.window_id).observe(target.window_id)
+        app.watch_web_areas(target.window_id, snapshot)
         context = {**snapshot.context, _MARKER: marker}
+        if count is not None:
+            context[_COUNT] = count
         if (hint := _hint(app.app, snapshot)) is not None:
             context["hint"] = hint
         return replace(snapshot, context=context)
@@ -277,6 +320,58 @@ class Driver:
                 break
         return self.observe(target)
 
+    def settle(
+        self, snapshot: DesktopSnapshot, *, reaction_s: float = 0.6, quiet_s: float = 0.15, timeout_s: float = 2.0,
+    ) -> tuple[DesktopSnapshot, SettleReport]:
+        """Wait until the snapshot's app has finished reacting, then observe its window again.
+
+        The app reacted if it posted accessibility notifications (values, elements,
+        focus, layout...) since the snapshot was taken, including before this call;
+        then the wait ends once ``quiet_s`` pass without one. With no reaction it ends
+        after ``reaction_s``, and never lasts longer than ``timeout_s``. Use it when an
+        app shows its result late, after an action that already settled."""
+        window = self.target_of(snapshot)
+        app = self._app(window.pid)
+        timing = SettleTiming(reaction_s, quiet_s, timeout_s)
+        report = self._settle(app, snapshot.context.get(_COUNT), timing, window, snapshot)
+        fresh = self._observe_after(window)
+        return fresh, _seen(report, snapshot, fresh)
+
+    def _settle(
+        self, app: Any, before: int | None, timing: SettleTiming, window: WindowTarget,
+        acted_on: DesktopSnapshot | None,
+    ) -> SettleReport:
+        if before is None:
+            before = app.settle_probe()
+        if before is None:
+            return SettleReport(None, False, 0.0)
+        look = None
+        if acted_on is not None and any(e.role == "WebArea" for e in acted_on.elements):
+            # Web pages announce some changes (checkboxes, radio buttons, scrolling) to
+            # no one: while nothing is announced, look whether the page shows something else.
+            signature = snapshot_signature(acted_on)
+
+            def look() -> bool:
+                try:
+                    return snapshot_signature(self.observe(window)) != signature
+                except TargetUnavailable:
+                    return True  # The action closed the window.
+
+        result = wait_for_quiet(app.settle_probe, before, timing, stop=self._stop_if_cancelled, look=look)
+        return SettleReport(result.reacted, result.timed_out, round(result.elapsed_s * 1000, 1))
+
+    def _observe_after(self, window: WindowTarget) -> DesktopSnapshot | None:
+        """The window after an action: the same one, or the app's current one when the
+        action closed it; None when the app is gone."""
+        try:
+            return self.observe(window)
+        except TargetUnavailable:
+            pass
+        try:
+            return self.observe(window.pid)
+        except TargetUnavailable:
+            return None
+
     def _stop_if_cancelled(self) -> None:
         if self.cancelled.is_set():
             self.cancelled.clear()
@@ -292,18 +387,35 @@ class Driver:
 
     # ---- acting ----------------------------------------------------------------
 
-    def run_command(self, where: Where, path: tuple[str, ...] | list[str] | str) -> ActResult:
+    def run_command(
+        self, where: Where, path: tuple[str, ...] | list[str] | str, *, settle: bool = False,
+    ) -> ActResult:
         """Run a menu command by path, such as ``"File > Export > PDF…"``. The menu is
         read when the command runs, so there is no snapshot to go stale. Menus belong
-        to the app: the command acts on the app's own key window."""
+        to the app: the command acts on the app's own key window. With ``settle``, the
+        fresh snapshot is of ``where``."""
         from .backends.macos_menus import run_command
 
         started = time.perf_counter()
-        self._stop_if_cancelled()
         pid = _pid(where)
-        with self._app(pid).app.input_scope():
+        app = self._app(pid)
+        before = app.settle_probe() if settle else None
+        self._stop_if_cancelled()
+        with app.app.input_scope():
             run_command(pid, path)
-        return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
+        if not settle:
+            return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
+        return self._settled(self.target(where), app, before, started)
+
+    def _settled(
+        self, window: WindowTarget, app: Any, before: int | None, started: float,
+        acted_on: DesktopSnapshot | None = None,
+    ) -> ActResult:
+        """The result of an action that ran, after waiting for the app to settle."""
+        report = self._settle(app, before, SettleTiming(), window, acted_on)
+        fresh = self._observe_after(window)
+        report = _seen(report, acted_on, fresh)
+        return ActResult("done", fresh, (), (time.perf_counter() - started) * 1000, report)
 
     def act(
         self,
@@ -316,9 +428,11 @@ class Driver:
         hotkey: str | None = None,
         scroll_direction: str | None = None,
         click_modifier: str | None = None,
+        settle: bool = False,
     ) -> ActResult:
         """Perform one action on an element of ``snapshot``, in the snapshot's window,
-        if the app has not changed under it."""
+        if the app has not changed under it. With ``settle``, then wait until the app
+        has finished reacting and return a fresh snapshot of the window (see ``settle``)."""
         started = time.perf_counter()
         kind = ActionKind(kind)
         window = self.target_of(snapshot)
@@ -328,12 +442,16 @@ class Driver:
         refused, snapshot = self._check(snapshot, started)
         if refused is not None:
             return refused
+        app = self._app(window.pid)
+        before = app.settle_probe() if settle else None
         self._stop_if_cancelled()
         try:
-            self._app(window.pid).backend(window.window_id).execute(snapshot, action)
+            app.backend(window.window_id).execute(snapshot, action)
         except StaleDesktopState:
             return ActResult("stale", self.observe(window), (), (time.perf_counter() - started) * 1000)
-        return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
+        if not settle:
+            return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
+        return self._settled(window, app, before, started, snapshot)
 
     def _check(self, snapshot: DesktopSnapshot, started: float) -> tuple[ActResult | None, DesktopSnapshot]:
         """A "changed" result when the app's structure changed under ``snapshot``;
@@ -378,6 +496,16 @@ class Driver:
             )
         return mine
 
+    def _input_target(self, where: Where, snapshot: DesktopSnapshot | None) -> tuple[WindowTarget, ActResult | None]:
+        """The input's window, and a "changed" result when the app changed under ``snapshot``.
+        Checked before the window is moved onto the invisible display, whose own
+        notifications (the app shown, the window deminiaturized) are not the app changing."""
+        target = self._raw_target(where, snapshot)
+        if snapshot is None:
+            return target, None
+        refused, _ = self._check(snapshot, time.perf_counter())
+        return target, refused
+
     def _window(self, target: WindowTarget) -> Any:
         """The target window on a display: brought onto the invisible display first
         when it is minimized or its app hidden."""
@@ -391,19 +519,21 @@ class Driver:
             app.open(window_id=target.window_id)
         return app.window(target.window_id)
 
-    def _raw(self, snapshot: DesktopSnapshot | None, send: Callable[[], None]) -> ActResult:
+    def _raw(
+        self, target: WindowTarget, send: Callable[[], None], settle: bool, snapshot: DesktopSnapshot | None,
+    ) -> ActResult:
         started = time.perf_counter()
-        if snapshot is not None:
-            refused, _ = self._check(snapshot, started)
-            if refused is not None:
-                return refused
+        app = self._app(target.pid)
+        before = app.settle_probe() if settle else None
         self._stop_if_cancelled()
         send()
-        return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
+        if not settle:
+            return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
+        return self._settled(target, app, before, started, snapshot)
 
     def click_at(
         self, where: Where, x: float, y: float, *, button: str = "left", count: int = 1,
-        modifiers: tuple[str, ...] | list[str] = (), snapshot: DesktopSnapshot | None = None,
+        modifiers: tuple[str, ...] | list[str] = (), snapshot: DesktopSnapshot | None = None, settle: bool = False,
     ) -> ActResult:
         """Click at a point in the window: ``button`` "left" or "right", ``count`` up to 3,
         ``modifiers`` from MOD, SHIFT, ALT, CTRL."""
@@ -411,58 +541,73 @@ class Driver:
 
         if button not in ("left", "right"):
             raise InvalidArguments(f"Unsupported button {button!r}; use left or right")
-        target = self._raw_target(where, snapshot)
+        target, refused = self._input_target(where, snapshot)
+        if refused is not None:
+            return refused
         window = self._window(target)
         point = Bounds(window.bounds.x + x, window.bounds.y + y, 0, 0)
         flags = modifier_flags(tuple(modifiers)) if modifiers else 0
         app = self._app(target.pid).app
-        return self._raw(snapshot, lambda: app.click(
+        return self._raw(target, lambda: app.click(
             point, count=count, right=button == "right", flags=flags, window_id=target.window_id,
-        ))
+        ), settle, snapshot)
 
     def drag(
         self, where: Where, points: list[tuple[float, float]] | list[list[float]], *,
-        snapshot: DesktopSnapshot | None = None,
+        snapshot: DesktopSnapshot | None = None, settle: bool = False,
     ) -> ActResult:
         """Press at the first point, move through the rest and release at the last."""
-        target = self._raw_target(where, snapshot)
+        target, refused = self._input_target(where, snapshot)
+        if refused is not None:
+            return refused
         window = self._window(target)
         path = [(window.bounds.x + float(px), window.bounds.y + float(py)) for px, py in points]
         if len(path) < 2:
             raise InvalidArguments("A drag needs at least two points")
         app = self._app(target.pid).app
-        return self._raw(snapshot, lambda: app.drag_path(path, window_id=target.window_id))
+        return self._raw(target, lambda: app.drag_path(path, window_id=target.window_id), settle, snapshot)
 
     def scroll_at(
         self, where: Where, x: float, y: float, *, dx: float = 0, dy: float = 0,
-        snapshot: DesktopSnapshot | None = None,
+        snapshot: DesktopSnapshot | None = None, settle: bool = False,
     ) -> ActResult:
         """Scroll the content under a point by ``dx``/``dy`` points; positive ``dy``
         moves the content down (shows what is above), as a scroll wheel turned up does."""
-        target = self._raw_target(where, snapshot)
+        target, refused = self._input_target(where, snapshot)
+        if refused is not None:
+            return refused
         window = self._window(target)
         point = (window.bounds.x + x, window.bounds.y + y)
         app = self._app(target.pid).app
-        return self._raw(snapshot, lambda: app.scroll_at(point, dx=round(dx), dy=round(dy), window_id=target.window_id))
+        send = lambda: app.scroll_at(point, dx=round(dx), dy=round(dy), window_id=target.window_id)  # noqa: E731
+        return self._raw(target, send, settle, snapshot)
 
-    def press(self, where: Where, keys: str, *, snapshot: DesktopSnapshot | None = None) -> ActResult:
+    def press(
+        self, where: Where, keys: str, *, snapshot: DesktopSnapshot | None = None, settle: bool = False,
+    ) -> ActResult:
         """Press one key (ENTER, TAB, ARROW_DOWN...) or a chord (MOD+S) in the window.
         Command chords an app menu item has run through the app's menu."""
         from .backends.macos_ax import _press_hotkey, _press_key
 
-        target = self._raw_target(where, snapshot)
+        target, refused = self._input_target(where, snapshot)
+        if refused is not None:
+            return refused
         self._window(target)
         app = self._app(target.pid).app
         if "+" in keys:
-            return self._raw(snapshot, lambda: _press_hotkey(app, keys, target.window_id))
-        return self._raw(snapshot, lambda: _press_key(app, keys, target.window_id))
+            return self._raw(target, lambda: _press_hotkey(app, keys, target.window_id), settle, snapshot)
+        return self._raw(target, lambda: _press_key(app, keys, target.window_id), settle, snapshot)
 
-    def type_text(self, where: Where, text: str, *, snapshot: DesktopSnapshot | None = None) -> ActResult:
+    def type_text(
+        self, where: Where, text: str, *, snapshot: DesktopSnapshot | None = None, settle: bool = False,
+    ) -> ActResult:
         """Type text as key events into the window, where it has key focus."""
-        target = self._raw_target(where, snapshot)
+        target, refused = self._input_target(where, snapshot)
+        if refused is not None:
+            return refused
         self._window(target)
         app = self._app(target.pid).app
-        return self._raw(snapshot, lambda: app.type_text(text, window_id=target.window_id))
+        return self._raw(target, lambda: app.type_text(text, window_id=target.window_id), settle, snapshot)
 
     def screenshot(
         self, where: Where, *, snapshot: DesktopSnapshot | None = None, max_side: int = 1568,
@@ -497,6 +642,14 @@ class Driver:
             window_id=window.window_id,
             title=window.title,
         )
+
+
+def _seen(report: SettleReport, before: DesktopSnapshot | None, after: DesktopSnapshot | None) -> SettleReport:
+    """A reaction no notification announced (a web checkbox): the window shows something else."""
+    if report.reacted is False and before is not None and after is not None \
+            and snapshot_signature(before) != snapshot_signature(after):
+        return replace(report, reacted=True)
+    return report
 
 
 def _hint(app: Any, snapshot: DesktopSnapshot) -> dict[str, Any] | None:

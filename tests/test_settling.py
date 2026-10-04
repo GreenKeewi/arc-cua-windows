@@ -146,3 +146,32 @@ def test_backend_can_raise_but_not_lower_the_settle_timeout() -> None:
         started = time.perf_counter()
         executor._settle_with_probe(executor._probe())
         assert expected <= time.perf_counter() - started < expected + 0.2
+
+
+def test_an_unannounced_change_seen_by_looking_ends_the_wait_early() -> None:
+    import time
+
+    from arc_cua.settling import SettleTiming, wait_for_quiet
+
+    looks = []
+
+    def look() -> bool:
+        looks.append(time.perf_counter())
+        return len(looks) >= 2
+
+    timing = SettleTiming(reaction_s=0.6, quiet_s=0.05, poll_s=0.005, look_every_s=0.02)
+    result = wait_for_quiet(lambda: 0, 0, timing, look=look)
+    assert result.reacted is True and result.timed_out is False
+    assert result.elapsed_s < 0.3
+
+
+def test_looking_stops_once_the_probe_shows_a_reaction() -> None:
+    import itertools
+
+    from arc_cua.settling import SettleTiming, wait_for_quiet
+
+    counts = itertools.chain([1, 2], itertools.repeat(2))
+    looks = []
+    timing = SettleTiming(quiet_s=0.05, poll_s=0.005, look_every_s=0.0)
+    result = wait_for_quiet(lambda: next(counts), 0, timing, look=lambda: looks.append(1) or False)
+    assert result.reacted is True and looks == []

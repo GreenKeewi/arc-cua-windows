@@ -27,7 +27,22 @@
   returns a `hint` (`relaunch_for_accessibility`) with the argument that turns it on,
   `--force-renderer-accessibility`. In Python it is `snapshot.context["hint"]`.
 
+- **Settling.** `settle: true` on `act`, `run_command` and the input tools waits until
+  the app has finished reacting, by its accessibility notifications, and returns a
+  fresh snapshot of the window with `settled: {reacted, timed_out, elapsed_ms}`;
+  `reacted: false` says the app announced nothing and the window shows the same, so the
+  action most likely did nothing. Web pages, which announce changes on the page and
+  some to no one, are listened to and looked at while settling. A `settle(snapshot)`
+  tool waits for a late reaction. Off by default; the timing is the action layer's
+  (0.6 s for a reaction, 0.15 s of quiet, 2 s at most), now shared by both. In Python:
+  `settle=True` and `Driver.settle`.
+
 ### Fixed
+
+- Input with a `snapshot` to a minimized window or a hidden app was refused as
+  `changed` the first time: moving the window onto the invisible display announced
+  the app shown or the window deminiaturized, which the driver counted as the app
+  changing. The snapshot is now checked before the window is moved.
 
 - A missing Accessibility permission, and any unexpected failure in a tool, came back
   from `arc-cua mcp` as a JSON-RPC protocol error; they are now tool errors.

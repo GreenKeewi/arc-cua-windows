@@ -119,7 +119,7 @@ def test_click_at_passes_points_and_options():
     result = call(srv, "click_at", pid=PID, x=12.5, y=40, button="right", modifiers=["SHIFT"])
     assert result["structuredContent"]["status"] == "done"
     assert driver.calls == [("click_at", PID, 12.5, 40, {
-        "button": "right", "count": 1, "modifiers": ("SHIFT",), "snapshot": None,
+        "button": "right", "count": 1, "modifiers": ("SHIFT",), "snapshot": None, "settle": False,
     })]
     call(srv, "click_at", pid=PID, x=1, y=2, window_id=7)
     assert driver.calls[-1][1] == WindowTarget(PID, 7)
@@ -166,6 +166,45 @@ def test_results_say_when_a_window_was_parked():
     srv.driver._app(PID).app.parked.append(A)  # As when input needed a minimized window on a display.
     typed = call(srv, "type_text", pid=PID, text="hi", snapshot=observed["snapshot"])["structuredContent"]
     assert typed["parked"] is True
+
+
+def test_act_with_settle_returns_what_happened_and_a_fresh_snapshot():
+    srv = server()
+    srv.driver._app(PID).desktop.reaction = (0.01,)
+    observed = call(srv, "observe", pid=PID)["structuredContent"]
+    acted = call(srv, "act", snapshot=observed["snapshot"], action="CLICK", element="a_submit", settle=True)
+    acted = acted["structuredContent"]
+    assert acted["status"] == "done"
+    assert acted["settled"]["reacted"] is True and acted["settled"]["timed_out"] is False
+    assert acted["fresh"]["window_id"] == A and acted["fresh"]["snapshot"] != observed["snapshot"]
+    typed = call(srv, "type_text", pid=PID, text="hi", snapshot=observed["snapshot"])["structuredContent"]
+    assert "settled" not in typed and "fresh" not in typed
+
+
+def test_settle_tool_reports_no_reaction():
+    srv = server()
+    observed = call(srv, "observe", pid=PID)["structuredContent"]
+    settled = call(srv, "settle", snapshot=observed["snapshot"], reaction_s=0.05)["structuredContent"]
+    assert settled["settled"]["reacted"] is False
+    assert settled["window_id"] == A and settled["snapshot"] != observed["snapshot"]
+
+
+def test_a_cancelled_settle_stops_early_and_gets_no_response():
+    srv = server()
+    srv.driver._app(PID).desktop.reaction = tuple(i * 0.01 for i in range(1, 500))
+    stdin, stdout, thread = serving(srv)
+    stdin.send(request(1, "observe", pid=PID))
+    snapshot = stdout.wait_for(1)["result"]["structuredContent"]["snapshot"]
+    started = time.monotonic()
+    stdin.send(request(2, "act", snapshot=snapshot, action="CLICK", element="a_submit", settle=True))
+    time.sleep(0.05)
+    stdin.send(cancel(2))
+    stdin.send(request(3, "observe", pid=PID))
+    stdout.wait_for(3)
+    assert time.monotonic() - started < 1
+    assert 2 not in stdout.by_id()
+    stdin.close()
+    thread.join(2)
 
 
 class Lines:

@@ -131,9 +131,56 @@ several actions on one snapshot work as you would expect.
 
 ### Waiting
 
-Nothing waits after an action. When you expect an action to open something, call
-`wait(snapshot)`: it returns a fresh snapshot as soon as the app's structure
-changes after that snapshot, or after `timeout_s` (default 1 s).
+Nothing waits after an action unless you ask. To know when an app has finished
+reacting, pass `settle: true` to `act`, `run_command` or an input tool. The driver
+counts the app's accessibility notifications (values, elements, focus, layout,
+menus…), which change within milliseconds of the app reacting, and waits:
+
+- until the count has been still for 0.15 s, once it changed;
+- for 0.6 s at most when it does not change at all: the app did not react;
+- for 2 s at most in any case.
+
+Then it observes the window again and returns the snapshot in `fresh`, with what
+happened in `settled`:
+
+```json
+{"status": "done", "elapsed_ms": 214.6,
+ "settled": {"reacted": true, "timed_out": false, "elapsed_ms": 188.4},
+ "fresh": {"snapshot": "s5", "window_id": 18342, "elements": [...]}}
+```
+
+- `reacted: false` means the app posted nothing in 0.6 s and the window shows the same
+  as before: the action most likely did nothing. An app that posts little to
+  accessibility (a canvas) can still have changed pixels that `observe` does not read.
+- Web pages post their notifications on the page rather than the app, and announce
+  some changes to no one (checkboxes, radio buttons, scrolling). The driver listens on
+  each page it has observed, and while nothing is announced it reads the window again
+  every 0.1 s, so those changes settle in about 0.3 s too. A Chromium-based app shows
+  its page only when started with `--force-renderer-accessibility` (see below).
+- `timed_out: true` means the app was still changing after 2 s (a loading list, an
+  animation): `fresh` may not be final.
+- `reacted: null` means the app's notifications could not be watched, so nothing was
+  waited for.
+
+If the action closed its window, `fresh` is the app's current window; when the app
+quit, there is no `fresh`. Actions refused as `changed` or `stale` do not settle.
+
+Some apps react, pause while they work, then show the result (a file operation, a
+search over the network, a sheet that opens after a delay). Settling ends once the
+first reaction goes quiet, so `fresh` can come before the result. When the result is
+a window, sheet or menu, an action on that snapshot after it arrives is refused as
+`changed`, with a fresh snapshot, as always. When `fresh` does not show what you expected yet, call
+`settle(snapshot)` with it: it counts notifications since that snapshot was taken, so
+a reaction that began before the call counts, and takes `reaction_s`, `quiet_s` and
+`timeout_s` to wait longer.
+
+The count covers the whole app, so a reaction in another of its windows counts too.
+It works the same for a minimized window, a hidden app and a window moved onto the
+invisible display.
+
+`wait(snapshot)` answers a narrower question: it returns a fresh snapshot as soon as
+the app's *structure* changes after that snapshot (a window, sheet or menu comes or
+goes), or after `timeout_s` (default 1 s).
 
 ### Menu commands
 
@@ -240,18 +287,19 @@ things are drawn, and they keep working while the window is out of sight.
 | `apps` | Running apps with a user interface: pid, name, bundle id, frontmost, hidden |
 | `windows` | All of an app's windows: window id, title, bounds, on screen or minimized |
 | `observe` | Snapshot of one window: `window_id`, else the app's focused window (or a minimized or hidden one); `query` filters elements; `screenshot: true` adds a PNG |
-| `act` | One action on an element of a snapshot |
+| `act` | One action on an element of a snapshot; `settle: true` waits for the app to react and returns a fresh snapshot |
+| `settle` | Wait for a snapshot's app to finish reacting, then a fresh snapshot, with `settled` |
 | `wait` | Fresh snapshot once the structure changes, or after `timeout_s` |
 | `commands` | The menu bar as commands; `query` filters by path |
-| `run_command` | Run a menu command by path |
+| `run_command` | Run a menu command by path; takes `settle` |
 | `release` | Stop working with an app (or every app, without `pid`): put back windows moved out of sight; its snapshots expire |
-| `screenshot`, `click_at`, `drag`, `scroll_at`, `press`, `type_text` | Pixels and raw input at window points; the window is `window_id`, else the `snapshot`'s, else the app's focused one |
+| `screenshot`, `click_at`, `drag`, `scroll_at`, `press`, `type_text` | Pixels and raw input at window points; the window is `window_id`, else the `snapshot`'s, else the app's focused one; the input tools take `settle` |
 
 ### Stopping
 
 Requests run one at a time, in order. To stop one, send MCP's
-`notifications/cancelled` with its id: a `wait` returns early, an action that has not
-started is not performed, a request still queued is skipped, and none of them gets a
+`notifications/cancelled` with its id: a `wait` or `settle` returns early, an action
+that has not started is not performed (one that has stops waiting to settle), a request still queued is skipped, and none of them gets a
 response. An action already under way finishes (most take milliseconds), and so does
 moving a window onto the invisible display or back. `ping` is answered at once, even
 while a request runs.
@@ -302,9 +350,10 @@ with Driver() as driver:
     window = driver.target_of(snapshot)  # WindowTarget(pid, window_id)
     seven = next(e for e in snapshot.elements if e.name == "7")
 
-    result = driver.act(snapshot, "CLICK", seven.id)
-    if not result.done:              # "changed" or "stale": decide again
-        snapshot = result.snapshot
+    result = driver.act(snapshot, "CLICK", seven.id, settle=True)
+    snapshot = result.snapshot       # after the app settled, or, if not done, fresh to decide again
+    if result.settled and result.settled.reacted is False:
+        print("the click did nothing")
 
     print([c.compact() for c in driver.commands(pid, query="mode")])
     driver.run_command(pid, "View > Scientific")
