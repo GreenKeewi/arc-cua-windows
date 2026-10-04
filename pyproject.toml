@@ -33,6 +33,7 @@ arc-cua = "arc_cua.cli:main"
 
 [project.optional-dependencies]
 browser = ["websockets>=13,<18"]
+bench = ["pyobjc-framework-WebKit>=11"]  # The web pages the workflow benchmarks drive.
 dev = ["pytest>=8.4,<9", "ruff>=0.14,<1"]
 macos = [
   "pyobjc-framework-ApplicationServices>=11",

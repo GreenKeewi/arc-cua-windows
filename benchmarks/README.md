@@ -67,5 +67,5 @@ with the display asleep, macOS reports no windows.
 ## Requirements
 
 macOS with Accessibility and Screen Recording granted to the terminal running the
-benchmarks, and `pip install -e '.[macos]'`. The primitives suite also uses Finder,
+benchmarks, and `pip install -e '.[macos,bench]'`. The primitives suite also uses Finder,
 System Settings and, when installed, Obsidian.
