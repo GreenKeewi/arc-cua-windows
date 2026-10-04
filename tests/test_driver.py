@@ -394,3 +394,23 @@ def test_an_app_that_cannot_be_opened_stops_its_journal(monkeypatch):
     with pytest.raises(PermissionError):
         driver_module._App(PID)
     assert journals and journals[0].closed
+
+
+# ---- status -----------------------------------------------------------------------
+
+
+def test_status_reports_permissions_and_capabilities(monkeypatch):
+    from arc_cua.backends import macos_background, macos_permissions
+    from arc_cua.backends.macos_parking import VirtualDisplay
+
+    def unavailable():
+        raise macos_background.BackgroundInputUnavailable("missing")
+
+    monkeypatch.setattr(macos_permissions, "accessibility_trusted", lambda: False)
+    monkeypatch.setattr(macos_permissions, "screen_recording_allowed", lambda: True)
+    monkeypatch.setattr(macos_background, "ensure_available", unavailable)
+    monkeypatch.setattr(VirtualDisplay, "supported", staticmethod(lambda: True))
+    status = Driver.status()
+    assert status["permissions"] == {"accessibility": False, "screen_recording": True}
+    assert status["background_input"] is False and status["virtual_display"] is True
+    assert status["version"] and status["python"].count(".") == 2

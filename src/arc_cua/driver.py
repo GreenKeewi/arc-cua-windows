@@ -196,6 +196,29 @@ class Driver:
     # ---- reading ---------------------------------------------------------------
 
     @staticmethod
+    def status() -> dict[str, Any]:
+        """What this process can do here, without needing any permission: arc-cua's
+        version, Python and macOS versions, whether Accessibility and Screen Recording
+        are granted, whether background input is available, and whether a minimized
+        window or a hidden app can be given an invisible display for input events."""
+        import platform
+
+        from .backends import macos_permissions
+        from .backends.macos_parking import VirtualDisplay
+
+        return {
+            "version": package_version(),
+            "python": platform.python_version(),
+            "macos": platform.mac_ver()[0],
+            "permissions": {
+                "accessibility": _check(macos_permissions.accessibility_trusted),
+                "screen_recording": _check(macos_permissions.screen_recording_allowed),
+            },
+            "background_input": _check(_background_input),
+            "virtual_display": _check(VirtualDisplay.supported),
+        }
+
+    @staticmethod
     def apps() -> list[dict[str, Any]]:
         """Running apps with a user interface: pid, name, bundle_id, frontmost, hidden."""
         import AppKit  # type: ignore
@@ -470,6 +493,29 @@ class Driver:
             window_id=window.window_id,
             title=window.title,
         )
+
+
+def package_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("arc-cua")
+    except Exception:
+        return "0"
+
+
+def _check(probe: Callable[[], bool]) -> bool:
+    try:
+        return bool(probe())
+    except Exception:
+        return False
+
+
+def _background_input() -> bool:
+    from .backends.macos_background import ensure_available
+
+    ensure_available()
+    return True
 
 
 def _pid(where: Where) -> int:

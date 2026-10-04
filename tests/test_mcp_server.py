@@ -312,3 +312,16 @@ def test_an_unexpected_failure_is_reported_as_an_internal_error():
             raise KeyError("window list")
 
     assert error(call(Server(Broken()), "screenshot", pid=PID))[0] == "internal_error"
+
+
+def test_status_works_without_any_permission(monkeypatch):
+    from arc_cua.backends import macos_permissions
+
+    monkeypatch.setattr(macos_permissions, "accessibility_trusted", lambda: False)
+
+    def no_access(pid):
+        raise PermissionError("no access")
+
+    status = call(Server(Driver(app_factory=no_access)), "status")["structuredContent"]
+    assert status["permissions"]["accessibility"] is False
+    assert {"version", "python", "macos", "background_input", "virtual_display"} <= set(status)

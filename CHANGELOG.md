@@ -18,6 +18,10 @@
   `element_not_found`, `action_not_offered`, ...); see docs/driver.md. The driver's
   exceptions have the same `code`, with new subclasses `ElementNotFound`,
   `ActionNotOffered`, `CommandNotFound`, `InvalidArguments` and `CaptureFailed`.
+- **`status` tool.** The server's own view of this Mac: arc-cua, Python and macOS
+  versions, whether Accessibility and Screen Recording are granted, whether background
+  input and invisible displays are available. It needs no permission, so a host can
+  show real permission state. In Python: `Driver.status()`.
 
 ### Fixed
 

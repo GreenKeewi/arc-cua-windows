@@ -4,7 +4,7 @@ Any MCP client (Claude Code, Codex, an agent of your own) can observe and act on
 macOS apps in the background through it. MCP's stdio transport is JSON-RPC with
 one message per line, implemented here directly.
 
-Tools: ``apps``, ``windows``, ``observe``, ``act``, ``wait``, ``commands``,
+Tools: ``status``, ``apps``, ``windows``, ``observe``, ``act``, ``wait``, ``commands``,
 ``run_command`` and ``release``; for what accessibility does not cover, ``screenshot``, ``click_at``,
 ``drag``, ``scroll_at``, ``press`` and ``type_text`` at points in the window.
 
@@ -31,6 +31,7 @@ import threading
 from collections import OrderedDict
 from typing import IO, Any
 
+from .driver import package_version
 from .models import ActionKind, DesktopSnapshot
 
 logger = logging.getLogger("arc_cua.mcp")
@@ -53,6 +54,15 @@ INSTRUCTIONS = (
 _ACTIONS = [kind.value for kind in ActionKind]
 
 TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "status",
+        "description": (
+            "What arc-cua can do on this Mac: its version, Python and macOS versions, whether Accessibility "
+            "and Screen Recording are granted to the app that started it, whether background input works, "
+            "and whether minimized windows and hidden apps can take input events (virtual_display)."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
     {
         "name": "apps",
         "description": "Running apps with a user interface: pid, name, bundle_id, frontmost, hidden.",
@@ -356,6 +366,9 @@ class Server:
             raise ToolError(f"Unknown tool {name!r}", "unknown_tool")
         return handler(**arguments)
 
+    def tool_status(self) -> dict[str, Any]:
+        return self.driver.status()
+
     def tool_apps(self) -> dict[str, Any]:
         return {"apps": self.driver.apps()}
 
@@ -491,7 +504,7 @@ class Server:
                 result: Any = {
                     "protocolVersion": params.get("protocolVersion") or PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "arc-cua", "version": _version()},
+                    "serverInfo": {"name": "arc-cua", "version": package_version()},
                     "instructions": INSTRUCTIONS,
                 }
             elif method == "ping":
@@ -621,15 +634,6 @@ def _element(element: Any) -> dict[str, Any]:
 def _key(ident: Any) -> str:
     """A request id as a set key that keeps 1 and "1" apart."""
     return json.dumps(ident)
-
-
-def _version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("arc-cua")
-    except Exception:
-        return "0"
 
 
 def serve(stdin: IO[str] = sys.stdin, stdout: IO[str] = sys.stdout) -> int:

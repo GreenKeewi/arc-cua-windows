@@ -24,7 +24,18 @@ Or let `uvx` fetch it when the MCP client starts it, as below. From a checkout:
 The process that runs the driver needs **Accessibility**, and **Screen Recording**
 for screenshots: System Settings → Privacy & Security. macOS grants them to the app
 that started the driver: your terminal, for Claude Code or Codex in a terminal, or
-the app that runs `arc-cua mcp`.
+the app that runs `arc-cua mcp`. The `status` tool reports what the server's
+process has, as macOS sees it:
+
+```json
+{"version": "0.1.0", "python": "3.12.14", "macos": "26.6.2",
+ "permissions": {"accessibility": true, "screen_recording": true},
+ "background_input": true, "virtual_display": true}
+```
+
+`background_input` says whether this macOS has the calls the driver uses to send
+input to an app in the background; `virtual_display`, whether minimized windows and
+hidden apps can be given an invisible display for input events and screenshots.
 
 ### Claude Code
 
@@ -204,6 +215,7 @@ things are drawn, and they keep working while the window is out of sight.
 
 | Tool | Does |
 |---|---|
+| `status` | Version, permissions and capabilities of the server's process; needs no permission |
 | `apps` | Running apps with a user interface: pid, name, bundle id, frontmost, hidden |
 | `windows` | All of an app's windows: window id, title, bounds, on screen or minimized |
 | `observe` | Snapshot of one window: `window_id`, else the app's focused window (or a minimized or hidden one); `query` filters elements; `screenshot: true` adds a PNG |
