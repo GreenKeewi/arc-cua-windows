@@ -67,6 +67,7 @@ def fake_target(monkeypatch, *, select_all=False, menu=False):
     app = object.__new__(macos_app.MacOSApp)
     app.pid, app.name, app.ax = 42, "Editor", object()
     app._user_pid, app._last_input = None, 0.0
+    app._parking, app._made_key = SimpleNamespace(unminimized=None), set()
     app.check_running = lambda: None
     app.key_window = lambda: SimpleNamespace(window_id=9)
     app.select_all = lambda: calls.append(("select_all",)) or select_all
@@ -142,3 +143,15 @@ def test_runtime_reports_a_quit_app_instead_of_a_generic_failure():
     policy = ScriptedPolicy([Decision(kind=ActionKind.CLICK, target_id="ok")])
     with pytest.raises(TargetUnavailable, match="quit"):
         DesktopExecutor(QuitBackend(), policy).run(Subtask(goal="Press OK", verification=("Done",)))
+
+
+def test_a_window_brought_back_from_the_dock_is_made_key_once_before_keys(monkeypatch):
+    app, calls = fake_target(monkeypatch)
+    monkeypatch.setattr(macos_background, "window_id", lambda ref: 9)
+    monkeypatch.setattr(macos_background, "click", lambda pid, window, point: calls.append(("click", window, point)))
+    monkeypatch.setattr(macos_app, "_inert_point", lambda ax, bounds: (50.0, 5.0))
+    app.window = lambda window_id: SimpleNamespace(window_id=window_id, bounds=Bounds(0, 0, 100, 100))
+    app._parking = SimpleNamespace(unminimized="restored window")
+    app.press(36)
+    app.press(36)
+    assert calls == [("click", 9, (50.0, 5.0)), ("press", 42, 9, 36, 0), ("press", 42, 9, 36, 0)]

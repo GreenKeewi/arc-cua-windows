@@ -96,6 +96,19 @@ def test_a_restored_window_is_focused_by_clicking_an_inert_spot(monkeypatch):
     assert macos_app._inert_point(None, Bounds(100, 50, 100, 80)) == (140, 55)
 
 
+def test_text_is_clicked_only_when_it_is_the_windows_own_title(monkeypatch):
+    import ApplicationServices as AS
+
+    window = Ref("window", AXRole="AXWindow")
+    link = Ref("link", AXRole="AXLink")
+    elements = {150: Ref("link text", AXRole="AXStaticText", AXParent=link),
+                140: Ref("title", AXRole="AXStaticText", AXParent=window)}
+    monkeypatch.setattr(AS, "AXUIElementCopyElementAtPosition",
+                        lambda app, x, y, _: (0, elements[round(x)]) if round(x) in elements else (-25200, None))
+    monkeypatch.setattr(macos_app, "_attr", lambda ref, name: ref.attributes.get(name))
+    assert macos_app._inert_point(None, Bounds(100, 50, 100, 80)) == (140, 55)
+
+
 def test_with_no_inert_spot_nothing_is_clicked(monkeypatch):
     _hit_test(monkeypatch, {x: "AXTextField" for x in range(100, 201)})
     assert macos_app._inert_point(None, Bounds(100, 50, 100, 80)) is None

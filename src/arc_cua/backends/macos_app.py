@@ -52,6 +52,7 @@ class MacOSApp:
         self.bundle_path = str(bundle.path()) if bundle is not None else None
         self.ax = AS.AXUIElementCreateApplication(pid)
         self._parking = WindowParking(pid, self.name, frame=self._frame)
+        self._made_key: set[int] = set()  # Restored windows already made key.
         self._user_pid: int | None = None
         self._last_input = 0.0
 
@@ -89,33 +90,35 @@ class MacOSApp:
             if window_id is None or self.on_display(window_id):
                 return
             self._parking.restore()  # Another window is parked; bring this one instead.
+            self._made_key.clear()
         if not wait_until(lambda: bool(self.windows()) or self._parking.needed(), wait_s):
             raise TargetUnavailable(self._no_window_reason())
         if park and (not self.windows() if window_id is None else not self.on_display(window_id)):
             self._parking.park(window_id)
-            if (window := self._parking.unminimized) is not None:
-                self._make_key(background.window_id(window))
 
-    def _make_key(self, window_id: int | None) -> None:
-        """Let a window brought back from the Dock take key events.
+    def ready_for_keys(self, window_id: int) -> bool:
+        """Let a window brought back from the Dock take key events; True when it clicked.
 
         Deminiaturized while its app is in the background, a window is neither main nor
         key, and the app sends key events nowhere. A background click makes it key, as
         a user's click would, without bringing the app to the front. It goes to an inert
-        spot at the top of the window (the frame, the title, empty toolbar space); with
-        none, nothing is clicked."""
-        if window_id is None:
-            return
+        spot at the top of the window (its frame, its title, empty toolbar space); with
+        none, nothing is clicked. Done once, and only before key events."""
+        restored = self._parking.unminimized
+        if restored is None or window_id in self._made_key or background.window_id(restored) != window_id:
+            return False
+        self._made_key.add(window_id)
         try:
             bounds = self.window(window_id).bounds
         except TargetUnavailable:
-            return
+            return False
         point = _inert_point(self.ax, bounds)
         if point is None:
             logger.debug("no inert spot to make window %s key", window_id)
-            return
+            return False
         with self.input_scope():
             background.click(self.pid, window_id, point)
+        return True
 
     @cached_property
     def embeds_chromium(self) -> bool:
@@ -143,6 +146,7 @@ class MacOSApp:
                 self._parking.restore()
             except TargetUnavailable:
                 pass
+            self._made_key.clear()
 
     # ---- windows -----------------------------------------------------------------
 
@@ -315,6 +319,7 @@ class MacOSApp:
 
     def press(self, code: int, flags: int = 0, *, window_id: int | None = None) -> None:
         window = self._input_window(window_id)
+        self.ready_for_keys(window.window_id)
         with self.input_scope():
             background.press(self.pid, window.window_id, code, flags)
 
@@ -337,6 +342,7 @@ class MacOSApp:
 
     def type_text(self, text: str, *, window_id: int | None = None) -> None:
         window = self._input_window(window_id)
+        self.ready_for_keys(window.window_id)
         with self.input_scope():
             background.type_text(self.pid, window.window_id, text, check=self.check_running)
 
@@ -416,18 +422,23 @@ def scroll_area_by_bars(app_ax: Any, point: tuple[float, float], *, dx: float, d
     return moved
 
 
-_INERT_ROLES = frozenset({"AXWindow", "AXStaticText", "AXToolbar"})
-
-
 def _inert_point(app_ax: Any, bounds: Bounds) -> tuple[float, float] | None:
-    """A point near the top of a window where a click does nothing but focus it."""
+    """A point near the top of a window where a click does nothing but focus it: the
+    window's frame, empty toolbar space, or the window's own title (text that belongs
+    to the window, not a link's or a button's label)."""
     import ApplicationServices as AS  # type: ignore
 
     y = bounds.y + 5
     for fraction in (0.5, 0.4, 0.6, 0.3, 0.7):
         x = bounds.x + bounds.width * fraction
         error, element = AS.AXUIElementCopyElementAtPosition(app_ax, float(x), float(y), None)
-        if error == 0 and element is not None and _attr(element, "AXRole") in _INERT_ROLES:
+        if error != 0 or element is None:
+            continue
+        role = _attr(element, "AXRole")
+        if role in ("AXWindow", "AXToolbar"):
+            return x, y
+        parent = _attr(element, "AXParent") if role == "AXStaticText" else None
+        if parent is not None and _attr(parent, "AXRole") == "AXWindow":
             return x, y
     return None
 

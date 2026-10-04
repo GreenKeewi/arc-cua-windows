@@ -502,13 +502,14 @@ class Driver:
         """The input's window, and a "changed" result when the app changed under ``snapshot``.
         Checked before the window is moved onto the invisible display, whose own
         notifications (the app shown, the window deminiaturized) are not the app changing."""
+        self._moved = None
         target = self._raw_target(where, snapshot)
         if snapshot is None:
             return target, None
         refused, _ = self._check(snapshot, time.perf_counter())
         return target, refused
 
-    def _window(self, target: WindowTarget) -> Any:
+    def _window(self, target: WindowTarget, *, keys: bool = False) -> Any:
         """The target window on a display: brought onto the invisible display first
         when it is minimized or its app hidden."""
         app = self._app(target.pid).app
@@ -517,11 +518,13 @@ class Driver:
                 f"Window {target.window_id} of process {target.pid} is gone (closed, or replaced by a new one); "
                 "find the app's window again."
             )
-        if not app.on_display(target.window_id):
+        moved = not app.on_display(target.window_id)
+        if moved:
             app.open(window_id=target.window_id)
             self._moved = target
-            # Moving the window posts notifications of its own (shown, made key); let them
-            # pass, so they are not taken for the app's reaction to the input.
+        if (keys and app.ready_for_keys(target.window_id)) or moved:
+            # Moving the window, and making it key, post notifications of their own; let
+            # them pass, so they are not taken for the app's reaction to the input.
             owner = self._app(target.pid)
             if (count := owner.settle_probe()) is not None:
                 wait_for_quiet(owner.settle_probe, count, _AFTER_PARKING)
@@ -604,7 +607,7 @@ class Driver:
         target, refused = self._input_target(where, snapshot)
         if refused is not None:
             return refused
-        self._window(target)
+        self._window(target, keys=True)
         app = self._app(target.pid).app
         if "+" in keys:
             return self._raw(target, lambda: _press_hotkey(app, keys, target.window_id), settle, snapshot)
@@ -617,7 +620,7 @@ class Driver:
         target, refused = self._input_target(where, snapshot)
         if refused is not None:
             return refused
-        self._window(target)
+        self._window(target, keys=True)
         app = self._app(target.pid).app
         return self._raw(target, lambda: app.type_text(text, window_id=target.window_id), settle, snapshot)
 

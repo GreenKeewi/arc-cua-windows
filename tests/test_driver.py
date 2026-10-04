@@ -132,6 +132,9 @@ class FakeMacOSApp:
             self.desktop.out_of_sight.discard(window_id)
             self.journal.add("AXApplicationShown", "AXApplication")
 
+    def ready_for_keys(self, window_id: int) -> bool:
+        return False
+
     def window(self, window_id: int):
         if window_id not in self.desktop.windows:
             raise TargetUnavailable(f"window {window_id} is gone")
@@ -499,6 +502,16 @@ def test_input_that_moves_a_window_onto_the_invisible_display_is_not_taken_for_a
     result = driver.type_text(PID, "hi", snapshot=driver.observe(PID), settle=True)
     assert result.done and app(driver).app.parked == [A]
     assert result.settled.reacted is False
+
+
+def test_a_window_moved_by_a_screenshot_is_not_counted_as_moved_by_a_later_input(driver, monkeypatch):
+    app(driver).desktop.out_of_sight.add(A)
+    driver._window(WindowTarget(PID, A))  # As a screenshot of the window does.
+    snapshot = driver.observe(PID)
+    observed = []
+    monkeypatch.setattr(driver, "observe", lambda where: observed.append(where) or Driver.observe(driver, where))
+    driver.type_text(PID, "hi", snapshot=snapshot, settle=True)
+    assert observed == [WindowTarget(PID, A)]  # Only the fresh snapshot after settling.
 
 
 def test_a_change_no_notification_announced_still_counts_as_a_reaction(driver):
