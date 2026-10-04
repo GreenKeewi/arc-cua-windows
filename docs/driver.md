@@ -173,6 +173,27 @@ its own handlers, and a document only counts a change it records as an edit. So:
 - A web view builds its accessibility tree on the first request after a page loads;
   observing then waits briefly for the page instead of returning an empty window.
 
+Apps built on Chromium (Electron apps, and apps on the Chromium Embedded Framework
+such as Spotify) show their content to accessibility only when it is turned on.
+Electron apps turn it on when asked, but drop it again while their window is covered;
+apps on the Chromium Embedded Framework do not turn it on at all. Started with
+`--force-renderer-accessibility`, both keep it on, covered or not:
+
+```bash
+open -a Spotify --args --force-renderer-accessibility
+```
+
+When such an app's window shows no web content, a snapshot says so in `hint`:
+
+```json
+{"hint": {"code": "relaunch_for_accessibility",
+          "message": "Spotify is built on Chromium and shows its window's content ...",
+          "args": ["--force-renderer-accessibility"]}}
+```
+
+The driver never quits or starts apps itself; an app that embeds the driver can offer
+to relaunch the app with `args`.
+
 ### Minimized windows and hidden apps
 
 A minimized window or a hidden app is read and controlled as it is: it stays in

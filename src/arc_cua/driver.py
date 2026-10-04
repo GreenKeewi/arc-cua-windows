@@ -45,6 +45,7 @@ _TARGETED = frozenset({
     ActionKind.SET_VALUE, ActionKind.DRAG_TO, ActionKind.DRAG_BY,
 })
 _MARKER = "changes_seen"
+FORCE_ACCESSIBILITY = "--force-renderer-accessibility"
 _CANCEL_POLL_S = 0.05
 
 
@@ -250,7 +251,10 @@ class Driver:
         # Read the journal before the walk: a change during the walk counts as after it.
         marker = app.journal.sequence
         snapshot = app.backend(target.window_id).observe(target.window_id)
-        return replace(snapshot, context={**snapshot.context, _MARKER: marker})
+        context = {**snapshot.context, _MARKER: marker}
+        if (hint := _hint(app.app, snapshot)) is not None:
+            context["hint"] = hint
+        return replace(snapshot, context=context)
 
     def wait(self, snapshot: DesktopSnapshot, *, timeout_s: float = 1.0, quiet_s: float = 0.05) -> DesktopSnapshot:
         """Observe the snapshot's window again once the app's structure changes after
@@ -493,6 +497,24 @@ class Driver:
             window_id=window.window_id,
             title=window.title,
         )
+
+
+def _hint(app: Any, snapshot: DesktopSnapshot) -> dict[str, Any] | None:
+    """Advice when a window shows less than the app has: a Chromium-based app whose
+    window exposes no web content has its page accessibility turned off, which only
+    relaunching it with FORCE_ACCESSIBILITY turns on."""
+    if not app.embeds_chromium or any(e.role == "WebArea" for e in snapshot.elements):
+        return None
+    return {
+        "code": "relaunch_for_accessibility",
+        "message": (
+            f"{app.name} is built on Chromium and shows its window's content to accessibility only when "
+            f"started with {FORCE_ACCESSIBILITY}. Quit it and start it again with that argument "
+            f"(open -a '{app.name}' --args {FORCE_ACCESSIBILITY}) to read and control its content, "
+            "or use screenshot and click_at."
+        ),
+        "args": [FORCE_ACCESSIBILITY],
+    }
 
 
 def package_version() -> str:

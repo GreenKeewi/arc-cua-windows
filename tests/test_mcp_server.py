@@ -325,3 +325,11 @@ def test_status_works_without_any_permission(monkeypatch):
     status = call(Server(Driver(app_factory=no_access)), "status")["structuredContent"]
     assert status["permissions"]["accessibility"] is False
     assert {"version", "python", "macos", "background_input", "virtual_display"} <= set(status)
+
+
+def test_observe_passes_on_a_hint_only_when_there_is_one():
+    srv = server()
+    assert "hint" not in call(srv, "observe", pid=PID)["structuredContent"]
+    srv.driver._app(PID).app.embeds_chromium = True
+    hint = call(srv, "observe", pid=PID)["structuredContent"]["hint"]
+    assert hint["code"] == "relaunch_for_accessibility"

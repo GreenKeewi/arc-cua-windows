@@ -11,6 +11,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from functools import cached_property
 from typing import Any
 
 from ..errors import TargetUnavailable, UnsupportedDesktopAction
@@ -26,6 +27,8 @@ _MENU_CHARACTERS = {
     "MINUS": "-", "EQUAL": "=", "LEFT_BRACKET": "[", "RIGHT_BRACKET": "]", "BACKSLASH": "\\",
     "SEMICOLON": ";", "QUOTE": "'", "COMMA": ",", "PERIOD": ".", "SLASH": "/", "GRAVE": "`",
 }
+
+_CHROMIUM_FRAMEWORKS = ("Chromium Embedded Framework.framework", "Electron Framework.framework")
 
 # How long after an input the app counts as having activated itself because of it.
 _ACTIVATION_WINDOW_S = 1.5
@@ -45,6 +48,8 @@ class MacOSApp:
             raise TargetUnavailable(f"No app is running with process ID {pid}.")
         self.pid = pid
         self.name = str(running.localizedName() or f"process {pid}")
+        bundle = running.bundleURL()
+        self.bundle_path = str(bundle.path()) if bundle is not None else None
         self.ax = AS.AXUIElementCreateApplication(pid)
         self._parking = WindowParking(pid, self.name, frame=self._frame)
         self._user_pid: int | None = None
@@ -88,6 +93,16 @@ class MacOSApp:
             raise TargetUnavailable(self._no_window_reason())
         if park and (not self.windows() if window_id is None else not self.on_display(window_id)):
             self._parking.park(window_id)
+
+    @cached_property
+    def embeds_chromium(self) -> bool:
+        """Whether the app is built on Chromium (Chromium Embedded Framework or
+        Electron), whose page content is in the accessibility tree only when the
+        app turns it on."""
+        if self.bundle_path is None:
+            return False
+        frameworks = os.path.join(self.bundle_path, "Contents", "Frameworks")
+        return any(os.path.isdir(os.path.join(frameworks, name)) for name in _CHROMIUM_FRAMEWORKS)
 
     @property
     def parked(self) -> bool:

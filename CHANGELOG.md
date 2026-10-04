@@ -22,6 +22,10 @@
   versions, whether Accessibility and Screen Recording are granted, whether background
   input and invisible displays are available. It needs no permission, so a host can
   show real permission state. In Python: `Driver.status()`.
+- **A hint for Chromium-based apps.** When an Electron or Chromium Embedded Framework
+  app (Spotify, Obsidian, Slack...) shows no web content to accessibility, `observe`
+  returns a `hint` (`relaunch_for_accessibility`) with the argument that turns it on,
+  `--force-renderer-accessibility`. In Python it is `snapshot.context["hint"]`.
 
 ### Fixed
 

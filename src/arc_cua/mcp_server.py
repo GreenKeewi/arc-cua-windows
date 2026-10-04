@@ -356,6 +356,8 @@ class Server:
             "window": snapshot.window,
             "elements": elements,
         }
+        if (hint := snapshot.context.get("hint")) is not None:
+            result["hint"] = hint
         return result
 
     # ---- tools ---------------------------------------------------------------------

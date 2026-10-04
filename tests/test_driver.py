@@ -84,6 +84,8 @@ class FakeMacOSApp:
         self.desktop = desktop
         self.inputs: list[tuple] = []
         self.parked: list[int] = []
+        self.name = "Form"
+        self.embeds_chromium = False
 
     def exists(self, window_id: int) -> bool:
         return window_id in self.desktop.windows
@@ -414,3 +416,44 @@ def test_status_reports_permissions_and_capabilities(monkeypatch):
     assert status["permissions"] == {"accessibility": False, "screen_recording": True}
     assert status["background_input"] is False and status["virtual_display"] is True
     assert status["version"] and status["python"].count(".") == 2
+
+
+# ---- hints ------------------------------------------------------------------------
+
+
+def test_a_chromium_app_showing_no_web_content_is_told_how_to_turn_it_on(driver):
+    assert "hint" not in driver.observe(PID).context  # Not built on Chromium.
+    app(driver).app.embeds_chromium = True
+    hint = driver.observe(PID).context["hint"]
+    assert hint["code"] == "relaunch_for_accessibility"
+    assert hint["args"] == ["--force-renderer-accessibility"] and "Form" in hint["message"]
+
+
+def test_a_chromium_app_showing_its_web_content_gets_no_hint(driver, monkeypatch):
+    app(driver).app.embeds_chromium = True
+    observe = FakeBackend.observe
+
+    def with_page(self, window_id):
+        snapshot = observe(self, window_id)
+        page = DesktopElement(id="page", role="WebArea", name="Player")
+        return DesktopSnapshot(application=snapshot.application, window=snapshot.window, revision=snapshot.revision,
+                               elements=(*snapshot.elements, page), context=snapshot.context)
+
+    monkeypatch.setattr(FakeBackend, "observe", with_page)
+    assert "hint" not in driver.observe(PID).context
+
+
+def test_chromium_apps_are_recognised_by_their_bundled_framework(tmp_path):
+    from arc_cua.backends.macos_app import MacOSApp
+
+    def app_at(framework):
+        bundle = tmp_path / framework / "App.app"
+        if framework:
+            (bundle / "Contents" / "Frameworks" / framework).mkdir(parents=True)
+        found = MacOSApp.__new__(MacOSApp)
+        found.bundle_path = str(bundle)
+        return found.embeds_chromium
+
+    assert app_at("Chromium Embedded Framework.framework")
+    assert app_at("Electron Framework.framework")
+    assert not app_at("")
