@@ -22,8 +22,9 @@ Or let `uvx` fetch it when the MCP client starts it, as below. From a checkout:
 `pip install -e '.[macos]'`.
 
 The process that runs the driver needs **Accessibility**, and **Screen Recording**
-for screenshots: System Settings → Privacy & Security. With MCP, that is the app
-hosting the MCP client (your terminal, for Claude Code or Codex in a terminal).
+for screenshots: System Settings → Privacy & Security. macOS grants them to the app
+that started the driver: your terminal, for Claude Code or Codex in a terminal, or
+the app that runs `arc-cua mcp`.
 
 ### Claude Code
 
@@ -229,8 +230,32 @@ those windows on the user's screen. So a host stops a task by cancelling, ends t
 session by closing standard input, and sends SIGTERM only if the server has not
 exited after that.
 
-Errors come back as tool results with `isError`, such as an expired snapshot
-("observe again") or an action an element does not offer.
+### Errors
+
+Errors come back as tool results with `isError`: the text says what went wrong,
+and `structuredContent` holds a stable `code` with the same `message`:
+
+```json
+{"code": "snapshot_expired", "message": "Unknown or expired snapshot 's3'; observe again"}
+```
+
+| Code | Means |
+|---|---|
+| `permission_denied` | Accessibility (or, for screenshots, Screen Recording) is not granted to the app that started arc-cua |
+| `target_unavailable` | The app quit, or the window is gone, minimized out of reach or on another desktop |
+| `snapshot_expired` | The snapshot is unknown or too old (the server keeps the last 64), or its app was released |
+| `element_not_found` | The snapshot has no element with that id |
+| `action_not_offered` | The element does not offer that action |
+| `command_not_found` | The app's menu bar has no command at that path |
+| `invalid_arguments` | A missing or unusable argument, such as `SET_VALUE` without `value` |
+| `unsupported_action` | The action cannot be done here, such as a point outside the window |
+| `capture_failed` | The window could not be captured, with Screen Recording allowed |
+| `background_unavailable` | This macOS lacks a call background input needs |
+| `unknown_tool` | No tool with that name |
+| `internal_error` | Anything else; the server logs the details to standard error |
+
+In Python the same codes are the `code` attribute of the exceptions in
+`arc_cua.errors` (a missing permission is a `PermissionError`).
 
 ## Python
 

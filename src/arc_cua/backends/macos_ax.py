@@ -804,12 +804,11 @@ class MacOSAXBackend:
 
     @staticmethod
     def _require_accessibility() -> None:
-        AS, _ = _frameworks()
-        if not AS.AXIsProcessTrusted():
-            raise PermissionError(
-                "macOS Accessibility permission is required. Grant it to your terminal/Python host in "
-                "System Settings > Privacy & Security > Accessibility."
-            )
+        from .macos_permissions import ACCESSIBILITY_REQUIRED, accessibility_trusted
+
+        _frameworks()
+        if not accessibility_trusted():
+            raise PermissionError(ACCESSIBILITY_REQUIRED)
 
 
 def _frameworks() -> tuple[Any, Any]:

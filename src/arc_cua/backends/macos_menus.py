@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..errors import TargetUnavailable, UnsupportedDesktopAction
+from ..errors import CommandNotFound, TargetUnavailable, UnsupportedDesktopAction
 
 _ATTRIBUTES = (
     "AXRole", "AXTitle", "AXEnabled", "AXMenuItemCmdChar", "AXMenuItemCmdModifiers", "AXMenuItemMarkChar",
@@ -88,7 +88,7 @@ def run_command(pid: int, path: tuple[str, ...] | list[str] | str) -> None:
         if error != 0:
             raise UnsupportedDesktopAction(f"Pressing menu command {' > '.join(wanted)!r} failed with error {error}")
         return
-    raise UnsupportedDesktopAction(f"No menu command {' > '.join(wanted)!r}")
+    raise CommandNotFound(f"No menu command {' > '.join(wanted)!r}")
 
 
 def _items(pid: int, *, include_apple_menu: bool):

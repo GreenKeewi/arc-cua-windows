@@ -598,13 +598,9 @@ def _capture_window(
 
         if not allowed:
 
-            raise PermissionError(
-                "Screen Recording permission is "
-                "required for OCR. Grant it to "
-                "your terminal/Python host in "
-                "System Settings > Privacy & Security, "
-                "then restart the host."
-            )
+            from .macos_permissions import SCREEN_RECORDING_REQUIRED
+
+            raise PermissionError(SCREEN_RECORDING_REQUIRED)
 
     if not hasattr(
         Quartz,

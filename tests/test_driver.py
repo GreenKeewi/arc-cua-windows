@@ -355,3 +355,42 @@ def test_a_cancelled_action_is_not_performed(driver):
     with pytest.raises(Cancelled):
         driver.type_text(PID, "hi", snapshot=snapshot)
     assert app(driver).desktop.executed == [] and app(driver).app.inputs == []
+
+
+# ---- errors -----------------------------------------------------------------------
+
+
+def test_permission_messages_name_the_app_that_started_arc_cua(monkeypatch):
+    from arc_cua.backends import macos_permissions
+    from arc_cua.backends.macos_ax import MacOSAXBackend
+
+    monkeypatch.setattr(macos_permissions, "accessibility_trusted", lambda: False)
+    with pytest.raises(PermissionError) as raised:
+        MacOSAXBackend._require_accessibility()
+    assert "the app that started arc-cua" in str(raised.value)
+    assert "terminal" not in str(raised.value)
+
+
+def test_an_app_that_cannot_be_opened_stops_its_journal(monkeypatch):
+    from arc_cua import driver as driver_module
+    from arc_cua.backends import macos_app, macos_ax, macos_changes
+
+    journals = []
+
+    class Journal:
+        def __init__(self, pid):
+            self.closed = False
+            journals.append(self)
+
+        def close(self):
+            self.closed = True
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("no access")
+
+    monkeypatch.setattr(macos_changes, "ChangeJournal", Journal)
+    monkeypatch.setattr(macos_app, "MacOSApp", lambda pid: object())
+    monkeypatch.setattr(macos_ax, "MacOSAXBackend", refuse)
+    with pytest.raises(PermissionError):
+        driver_module._App(PID)
+    assert journals and journals[0].closed

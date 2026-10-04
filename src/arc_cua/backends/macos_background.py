@@ -68,6 +68,8 @@ _PSN = ctypes.c_uint8 * 8
 class BackgroundInputUnavailable(RuntimeError):
     """This macOS lacks a call background input needs."""
 
+    code = "background_unavailable"
+
 
 class _SkyLight:
     def __init__(self) -> None:

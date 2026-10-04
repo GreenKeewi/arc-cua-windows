@@ -29,7 +29,15 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from .errors import Cancelled, StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
+from .errors import (
+    ActionNotOffered,
+    Cancelled,
+    CaptureFailed,
+    ElementNotFound,
+    InvalidArguments,
+    StaleDesktopState,
+    TargetUnavailable,
+)
 from .models import ActionKind, Bounds, DesktopSnapshot, ExecutableAction
 
 _TARGETED = frozenset({
@@ -90,10 +98,14 @@ class _App:
 
         # Journal first, so nothing that happens during the first observation is missed.
         self.journal = ChangeJournal(pid)
-        self.app = MacOSApp(pid)
-        self._backend_class = MacOSAXBackend
-        self._resolver = MacOSAXBackend(pid, app=self.app)
-        self._resolver.open()
+        try:
+            self.app = MacOSApp(pid)
+            self._backend_class = MacOSAXBackend
+            self._resolver = MacOSAXBackend(pid, app=self.app)
+            self._resolver.open()
+        except BaseException:
+            self.journal.close()
+            raise
         self._backends: dict[int, Any] = {}
 
     def resolve_window(self) -> int:
@@ -334,7 +346,7 @@ class Driver:
             return self.target(where)
         mine = self.target_of(snapshot)
         if (isinstance(where, WindowTarget) and where != mine) or (isinstance(where, int) and where != mine.pid):
-            raise UnsupportedDesktopAction(
+            raise InvalidArguments(
                 f"The snapshot is of window {mine.window_id} of process {mine.pid}, not the target given"
             )
         return mine
@@ -371,7 +383,7 @@ class Driver:
         from .backends.macos_ax import modifier_flags
 
         if button not in ("left", "right"):
-            raise UnsupportedDesktopAction(f"Unsupported button {button!r}; use left or right")
+            raise InvalidArguments(f"Unsupported button {button!r}; use left or right")
         target = self._raw_target(where, snapshot)
         window = self._window(target)
         point = Bounds(window.bounds.x + x, window.bounds.y + y, 0, 0)
@@ -390,7 +402,7 @@ class Driver:
         window = self._window(target)
         path = [(window.bounds.x + float(px), window.bounds.y + float(py)) for px, py in points]
         if len(path) < 2:
-            raise UnsupportedDesktopAction("A drag needs at least two points")
+            raise InvalidArguments("A drag needs at least two points")
         app = self._app(target.pid).app
         return self._raw(snapshot, lambda: app.drag_path(path, window_id=target.window_id))
 
@@ -441,7 +453,11 @@ class Driver:
         else:
             image = _capture_window(quartz, window.window_id)
         if image is None:
-            raise UnsupportedDesktopAction("The window could not be captured; is Screen Recording allowed?")
+            from .backends.macos_permissions import SCREEN_RECORDING_REQUIRED, screen_recording_allowed
+
+            if not screen_recording_allowed():
+                raise PermissionError(SCREEN_RECORDING_REQUIRED)
+            raise CaptureFailed(f"Window {window.window_id} could not be captured")
         png = png_image(image, max_side=max_side)
         width = quartz.CGImageGetWidth(image)
         height = quartz.CGImageGetHeight(image)
@@ -478,15 +494,15 @@ def _action(
     element = None
     if kind in _TARGETED:
         if not target:
-            raise UnsupportedDesktopAction(f"{kind.value} needs a target element id")
+            raise InvalidArguments(f"{kind.value} needs a target element id")
         try:
             element = snapshot.element(target)
         except KeyError as exc:
-            raise UnsupportedDesktopAction(f"No element {target!r} in this snapshot") from exc
+            raise ElementNotFound(f"No element {target!r} in this snapshot") from exc
         if kind not in element.actions:
-            raise UnsupportedDesktopAction(f"{kind.value} is not offered for {target} ({element.role})")
+            raise ActionNotOffered(f"{kind.value} is not offered for {target} ({element.role})")
         if kind in {ActionKind.TYPE_TEXT, ActionKind.SET_VALUE} and fields.get("value") is None:
-            raise UnsupportedDesktopAction(f"{kind.value} needs a value")
+            raise InvalidArguments(f"{kind.value} needs a value")
     return ExecutableAction(
         kind=kind,
         target_id=element.id if element else None,

@@ -13,6 +13,22 @@
   early, an action not yet started is not performed, a queued request is skipped,
   and none gets a response. `ping` is answered while a request runs. In Python, set
   `Driver.cancelled` from another thread; the call raises `Cancelled`.
+- **Error codes.** Tool errors carry a stable `code` and `message` in
+  `structuredContent` (`permission_denied`, `target_unavailable`, `snapshot_expired`,
+  `element_not_found`, `action_not_offered`, ...); see docs/driver.md. The driver's
+  exceptions have the same `code`, with new subclasses `ElementNotFound`,
+  `ActionNotOffered`, `CommandNotFound`, `InvalidArguments` and `CaptureFailed`.
+
+### Fixed
+
+- A missing Accessibility permission, and any unexpected failure in a tool, came back
+  from `arc-cua mcp` as a JSON-RPC protocol error; they are now tool errors.
+- Permission messages named "your terminal/Python host"; they now name the app that
+  started arc-cua, which may be any app.
+- A screenshot without Screen Recording permission now says so (`permission_denied`)
+  instead of a generic capture failure.
+- An app that could not be opened (for example, without Accessibility permission)
+  left a background thread running for each attempt.
 
 ## 0.1.0 — 2026-10-04
 

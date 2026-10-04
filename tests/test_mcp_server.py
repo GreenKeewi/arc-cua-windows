@@ -269,3 +269,46 @@ def test_requests_read_before_input_ends_still_run():
     stdin.close()
     thread.join(2)
     assert set(stdout.by_id()) == {1, 2}
+
+
+def error(result: dict) -> tuple[str, str]:
+    assert result["isError"]
+    assert result["structuredContent"]["message"] == result["content"][0]["text"]
+    return result["structuredContent"]["code"], result["content"][0]["text"]
+
+
+def test_tool_errors_carry_a_stable_code():
+    srv = server()
+    snapshot = call(srv, "observe", pid=PID)["structuredContent"]["snapshot"]
+    assert error(call(srv, "act", snapshot="s404", action="CLICK", element="a_submit"))[0] == "snapshot_expired"
+    assert error(call(srv, "act", snapshot=snapshot, action="CLICK", element="nope"))[0] == "element_not_found"
+    assert error(call(srv, "act", snapshot=snapshot, action="SET_VALUE", element="a_submit", value="x"))[0] \
+        == "action_not_offered"
+    assert error(call(srv, "act", snapshot=snapshot, action="CLICK"))[0] == "invalid_arguments"
+    assert error(call(srv, "act", snapshot=snapshot, action="CLICK", element="a_submit", bogus=1))[0] \
+        == "invalid_arguments"
+    assert error(call(srv, "nope"))[0] == "unknown_tool"
+    srv.driver._app(PID).desktop.windows.pop(A)
+    assert error(call(srv, "act", snapshot=snapshot, action="CLICK", element="a_submit"))[0] == "target_unavailable"
+
+
+def test_a_missing_permission_is_a_tool_error_not_a_protocol_error():
+    from arc_cua.backends.macos_permissions import ACCESSIBILITY_REQUIRED
+
+    def no_access(pid):
+        raise PermissionError(ACCESSIBILITY_REQUIRED)
+
+    srv = Server(Driver(app_factory=no_access))
+    reply = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "observe", "arguments": {"pid": PID}}})
+    assert "error" not in reply
+    code, message = error(reply["result"])
+    assert code == "permission_denied" and "the app that started arc-cua" in message
+
+
+def test_an_unexpected_failure_is_reported_as_an_internal_error():
+    class Broken(RawDriver):
+        def screenshot(self, where, snapshot=None):
+            raise KeyError("window list")
+
+    assert error(call(Server(Broken()), "screenshot", pid=PID))[0] == "internal_error"

@@ -31,7 +31,6 @@ import threading
 from collections import OrderedDict
 from typing import IO, Any
 
-from .errors import JevDesktopError
 from .models import ActionKind, DesktopSnapshot
 
 logger = logging.getLogger("arc_cua.mcp")
@@ -283,7 +282,21 @@ TOOLS += RAW_TOOLS
 
 
 class ToolError(Exception):
-    pass
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def error_code(exc: BaseException) -> str:
+    """The stable code a tool error is reported with (see docs/driver.md)."""
+    if isinstance(exc, PermissionError):
+        return "permission_denied"
+    code = getattr(exc, "code", None)
+    if isinstance(code, str):
+        return code
+    if isinstance(exc, (ValueError, TypeError)):
+        return "invalid_arguments"
+    return "internal_error"
 
 
 class Server:
@@ -315,7 +328,7 @@ class Server:
         try:
             return self._snapshots[name]
         except KeyError:
-            raise ToolError(f"Unknown or expired snapshot {name!r}; observe again") from None
+            raise ToolError(f"Unknown or expired snapshot {name!r}; observe again", "snapshot_expired") from None
 
     def _render(self, snapshot: DesktopSnapshot, query: str | None = None) -> dict[str, Any]:
         elements = [_element(e) for e in snapshot.elements if e.visible]
@@ -340,7 +353,7 @@ class Server:
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         handler = getattr(self, f"tool_{name}", None)
         if handler is None:
-            raise ToolError(f"Unknown tool {name!r}")
+            raise ToolError(f"Unknown tool {name!r}", "unknown_tool")
         return handler(**arguments)
 
     def tool_apps(self) -> dict[str, Any]:
@@ -497,8 +510,16 @@ class Server:
     def _tool_result(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
             content = self.call(name, arguments)
-        except (ToolError, JevDesktopError, ValueError, TypeError) as exc:
-            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+        except Exception as exc:
+            code = error_code(exc)
+            if code == "internal_error":
+                logger.exception("tool %s failed", name)
+            message = str(exc) or type(exc).__name__
+            return {
+                "content": [{"type": "text", "text": message}],
+                "structuredContent": {"code": code, "message": message},
+                "isError": True,
+            }
         image = content.pop(_IMAGE, None)
         text = json.dumps(content, ensure_ascii=False, separators=(",", ":"), default=str)
         parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
