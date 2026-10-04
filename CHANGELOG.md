@@ -34,7 +34,8 @@
   action most likely did nothing. Web pages, which announce changes on the page and
   some to no one, are listened to and looked at while settling. A `settle(snapshot)`
   tool waits for a late reaction. Off by default; the timing is the action layer's
-  (0.6 s for a reaction, 0.15 s of quiet, 2 s at most), now shared by both. In Python:
+  (0.6 s for a reaction, 0.15 s of quiet, 2 s at most), now shared by both. A cancel
+  while settling after the action returns `done` with `settled.cancelled`. In Python:
   `settle=True` and `Driver.settle`.
 
 ### Fixed

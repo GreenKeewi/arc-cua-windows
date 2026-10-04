@@ -688,7 +688,10 @@ def _element(element: Any) -> dict[str, Any]:
 
 
 def _settled(report: Any) -> dict[str, Any]:
-    return {"reacted": report.reacted, "timed_out": report.timed_out, "elapsed_ms": report.elapsed_ms}
+    settled = {"reacted": report.reacted, "timed_out": report.timed_out, "elapsed_ms": report.elapsed_ms}
+    if report.cancelled:
+        settled["cancelled"] = True
+    return settled
 
 
 def _key(ident: Any) -> str:

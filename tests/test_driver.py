@@ -168,6 +168,8 @@ class FakeApp:
 
     def resolve_window(self) -> int:
         self.resolved += 1
+        if self.desktop.focused not in self.desktop.windows:
+            raise TargetUnavailable("the app has no window")
         return self.desktop.focused
 
     def backend(self, window_id: int) -> FakeBackend:
@@ -531,7 +533,7 @@ def test_on_a_web_page_an_unannounced_change_is_seen_without_waiting_out_the_rea
     assert result.settled.elapsed_ms < 450
 
 
-def test_web_areas_are_watched_once_each():
+def test_web_areas_are_watched_once_per_window():
     from types import SimpleNamespace
 
     from arc_cua.driver import _App
@@ -547,7 +549,8 @@ def test_web_areas_are_watched_once_each():
     ))
     app.watch_web_areas(A, snapshot)
     app.watch_web_areas(A, snapshot)
-    assert [ref for ref, _ in watched] == ["web area ref"]
+    app.watch_web_areas(B, snapshot)  # Another window: ids are numbered per window.
+    assert [ref for ref, _ in watched] == ["web area ref", "web area ref"]
     assert "AXLayoutComplete" in watched[0][1]
 
 
@@ -558,16 +561,38 @@ def test_without_notifications_settle_does_not_wait_and_says_so(driver):
     assert result.snapshot is not None
 
 
-def test_a_cancelled_settle_stops_waiting(driver):
+def test_a_cancel_while_settling_after_the_action_returns_done_not_cancelled(driver):
+    # The action was done: raising Cancelled would tell the caller it was not, and a retry would repeat it.
     app(driver).desktop.reaction = tuple(i * 0.01 for i in range(1, 300))
     snapshot = driver.observe(PID)
     threading.Timer(0.1, driver.cancelled.set).start()
     started = time.monotonic()
-    with pytest.raises(Cancelled):
-        driver.act(snapshot, "CLICK", "a_submit", settle=True)
+    result = driver.act(snapshot, "CLICK", "a_submit", settle=True)
     assert time.monotonic() - started < 0.5
-    assert app(driver).desktop.executed  # The action itself was done.
+    assert result.done and result.settled.cancelled and result.snapshot is None
+    assert app(driver).desktop.executed
     assert not driver.cancelled.is_set()
+
+
+def test_a_cancelled_settle_on_its_own_raises_cancelled(driver):
+    app(driver).desktop.reaction = tuple(i * 0.01 for i in range(1, 300))
+    snapshot = driver.observe(PID)
+    driver.act(snapshot, "CLICK", "a_submit")
+    threading.Timer(0.1, driver.cancelled.set).start()
+    with pytest.raises(Cancelled):
+        driver.settle(snapshot)
+    assert not driver.cancelled.is_set()
+
+
+def test_a_settled_menu_command_that_closes_the_window_still_reports_done(driver, monkeypatch):
+    from arc_cua.backends import macos_menus
+
+    def close_window(pid, path):
+        app(driver).desktop.windows.clear()
+
+    monkeypatch.setattr(macos_menus, "run_command", close_window)
+    result = driver.run_command(PID, "File > Close Window", settle=True)
+    assert result.done and result.snapshot is None
 
 
 # ---- errors -----------------------------------------------------------------------

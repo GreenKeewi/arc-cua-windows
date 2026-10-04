@@ -164,6 +164,8 @@ happened in `settled`:
 
 If the action closed its window, `fresh` is the app's current window; when the app
 quit, there is no `fresh`. Actions refused as `changed` or `stale` do not settle.
+Cancelled while settling, an action that was done still returns `done`, with
+`settled.cancelled: true` and no `fresh`, so it is not mistaken for one never performed.
 
 Some apps react, pause while they work, then show the result (a file operation, a
 search over the network, a sheet that opens after a delay). Settling ends once the

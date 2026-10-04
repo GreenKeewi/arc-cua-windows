@@ -32,6 +32,7 @@ class Settled:
     reacted: bool  # The probe changed from the one before the action.
     timed_out: bool  # Still changing when the timeout ended the wait.
     elapsed_s: float
+    stopped: bool = False  # ``stop`` ended the wait early.
 
 
 def wait_for_quiet(
@@ -39,13 +40,13 @@ def wait_for_quiet(
     before: Any,
     timing: SettleTiming,
     *,
-    stop: Callable[[], None] | None = None,
+    stop: Callable[[], bool] | None = None,
     look: Callable[[], bool] | None = None,
 ) -> Settled:
     """Poll ``probe`` until the app reacted and went quiet, or did not react in time.
 
     ``before`` is the probe read before the action. A probe that returns None ends
-    the wait. ``stop`` is called before each poll and may raise to abandon the wait.
+    the wait. ``stop`` is asked before each poll; True ends the wait early.
     ``look``, for apps that do not announce every change, is asked every
     ``look_every_s`` while the probe has not changed; True counts as a reaction."""
     started = time.perf_counter()
@@ -55,8 +56,8 @@ def wait_for_quiet(
     timed_out = False
     looked_at = started
     while True:
-        if stop is not None:
-            stop()
+        if stop is not None and stop():
+            return Settled(previous, changed, False, time.perf_counter() - started, stopped=True)
         time.sleep(timing.poll_s)
         current = probe()
         now = time.perf_counter()

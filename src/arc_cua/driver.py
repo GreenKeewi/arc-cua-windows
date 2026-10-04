@@ -74,6 +74,7 @@ class SettleReport:
     reacted: bool | None
     timed_out: bool  # Still reacting when the timeout ended the wait.
     elapsed_ms: float  # Time spent waiting.
+    cancelled: bool = False  # Cancelled while waiting, after the action was done: no fresh snapshot.
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +133,7 @@ class _App:
             self.events.close()
             raise
         self._backends: dict[int, Any] = {}
-        self._web_areas: set[str] = set()
+        self._web_areas: set[tuple[int, str]] = set()
 
     def resolve_window(self) -> int:
         return self._resolver.resolve_window()
@@ -153,8 +154,10 @@ class _App:
         their web areas rather than on the app."""
         refs = getattr(self.backend(window_id), "_refs", {})
         for element in snapshot.elements:
-            if element.role == "WebArea" and element.id not in self._web_areas and element.id in refs:
-                self._web_areas.add(element.id)
+            # Ids are numbered per window, so two windows can have a web area with the same id.
+            key = (window_id, element.id)
+            if element.role == "WebArea" and key not in self._web_areas and element.id in refs:
+                self._web_areas.add(key)
                 self.events.watch_element(refs[element.id], _WEB_NOTIFICATIONS)
 
     def close(self) -> None:
@@ -178,7 +181,9 @@ class Driver:
         self._apps: dict[int, Any] = {}
         self._moved: WindowTarget | None = None  # A window the current input moved onto the invisible display.
         # Set from another thread to stop the operation in progress: a wait returns early
-        # and an action not yet started is not performed; either raises Cancelled.
+        # and an action not yet started is not performed; either raises Cancelled. An
+        # action already done stops waiting to settle and returns "done", with
+        # settled.cancelled.
         # Moving a window onto the invisible display, or back, always completes.
         self.cancelled = threading.Event()
 
@@ -336,6 +341,8 @@ class Driver:
         app = self._app(window.pid)
         timing = SettleTiming(reaction_s, quiet_s, timeout_s)
         report = self._settle(app, snapshot.context.get(_COUNT), timing, window, snapshot)
+        if report.cancelled:
+            raise Cancelled("Cancelled; nothing more was done")
         fresh = self._observe_after(window)
         return fresh, _seen(report, snapshot, fresh)
 
@@ -359,8 +366,10 @@ class Driver:
                 except TargetUnavailable:
                     return True  # The action closed the window.
 
-        result = wait_for_quiet(app.settle_probe, before, timing, stop=self._stop_if_cancelled, look=look)
-        return SettleReport(result.reacted, result.timed_out, round(result.elapsed_s * 1000, 1))
+        result = wait_for_quiet(app.settle_probe, before, timing, stop=self.cancelled.is_set, look=look)
+        if result.stopped:
+            self.cancelled.clear()
+        return SettleReport(result.reacted, result.timed_out, round(result.elapsed_s * 1000, 1), result.stopped)
 
     def _observe_after(self, window: WindowTarget) -> DesktopSnapshot | None:
         """The window after an action: the same one, or the app's current one when the
@@ -401,13 +410,15 @@ class Driver:
         started = time.perf_counter()
         pid = _pid(where)
         app = self._app(pid)
+        # The window to observe after settling, found before the command can close it.
+        window = self.target(where) if settle else None
         before = app.settle_probe() if settle else None
         self._stop_if_cancelled()
         with app.app.input_scope():
             run_command(pid, path)
-        if not settle:
+        if window is None:
             return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
-        return self._settled(self.target(where), app, before, started)
+        return self._settled(window, app, before, started)
 
     def _settled(
         self, window: WindowTarget, app: Any, before: int | None, started: float,
@@ -415,6 +426,8 @@ class Driver:
     ) -> ActResult:
         """The result of an action that ran, after waiting for the app to settle."""
         report = self._settle(app, before, SettleTiming(), window, acted_on)
+        if report.cancelled:
+            return ActResult("done", None, (), (time.perf_counter() - started) * 1000, report)
         fresh = self._observe_after(window)
         report = _seen(report, acted_on, fresh)
         return ActResult("done", fresh, (), (time.perf_counter() - started) * 1000, report)
