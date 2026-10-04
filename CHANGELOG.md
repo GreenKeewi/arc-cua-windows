@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### For apps that embed the driver
+
+- **`release` tool.** `release(pid)` puts back the windows of an app that were moved
+  onto the invisible display (minimized or hidden again) and expires its snapshots;
+  without `pid` it releases every app. `act` and the input tools report
+  `"parked": true` while an app has such a window. In Python: `Driver.release`,
+  `Driver.release_all` and `Driver.parked`.
+
 ## 0.1.0 — 2026-10-04
 
 ### A macOS driver you can use on its own

@@ -120,6 +120,7 @@ class FakeApp:
         self.app = FakeMacOSApp(self.desktop)
         self.backends: dict[int, FakeBackend] = {}
         self.resolved = 0
+        self.closed = False
 
     def resolve_window(self) -> int:
         self.resolved += 1
@@ -129,7 +130,7 @@ class FakeApp:
         return self.backends.setdefault(window_id, FakeBackend(self.desktop))
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
 @pytest.fixture
@@ -302,3 +303,30 @@ def test_raw_input_is_refused_when_the_snapshot_window_changed(driver):
     app(driver).journal.add("AXSheetCreated")
     result = driver.click_at(PID, 10, 20, snapshot=snapshot)
     assert result.status == "changed" and app(driver).app.inputs == []
+
+
+# ---- releasing apps ---------------------------------------------------------------
+
+
+def test_release_puts_one_app_back_and_forgets_it(driver):
+    first = app(driver)
+    driver.observe(PID)
+    assert driver.release(PID) is True
+    assert first.closed
+    assert driver.release(PID) is False
+    assert app(driver) is not first  # Working with it again starts afresh.
+
+
+def test_release_all_releases_every_app(driver):
+    apps = [driver._app(pid) for pid in (PID, PID + 1)]
+    assert driver.release_all() == [PID, PID + 1]
+    assert all(a.closed for a in apps)
+    assert driver.release_all() == []
+
+
+def test_parked_reports_windows_moved_out_of_sight(driver):
+    assert driver.parked(PID) is False  # An app the driver never touched.
+    app(driver).app.parked.append(A)
+    assert driver.parked(PID) is True
+    driver.release(PID)
+    assert driver.parked(PID) is False

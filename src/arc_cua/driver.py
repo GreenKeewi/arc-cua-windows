@@ -129,15 +129,30 @@ class Driver:
         self.close()
 
     def close(self) -> None:
-        for app in self._apps.values():
-            app.close()
-        self._apps.clear()
+        self.release_all()
 
-    def release(self, pid: int) -> None:
-        """Stop working with one app and put its windows back as they were."""
+    def release(self, pid: int) -> bool:
+        """Stop working with one app and put its windows back as they were. Its
+        snapshots can no longer be acted on. True when the driver was working with it."""
         app = self._apps.pop(pid, None)
-        if app is not None:
-            app.close()
+        if app is None:
+            return False
+        app.close()
+        return True
+
+    def release_all(self) -> list[int]:
+        """Release every app the driver is working with; returns their pids."""
+        pids = list(self._apps)
+        for pid in pids:
+            self.release(pid)
+        return pids
+
+    def parked(self, pid: int) -> bool:
+        """Whether the app has windows moved onto the invisible display, to be put back
+        by ``release``. Accessibility actions never park; input events and screenshots
+        in a minimized window or a hidden app do."""
+        app = self._apps.get(pid)
+        return app is not None and bool(app.app.parked)
 
     def _app(self, pid: int) -> Any:
         app = self._apps.get(pid)

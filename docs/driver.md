@@ -171,6 +171,11 @@ window onto an invisible display, where the app draws it and takes input; when
 the session ends, or `release(pid)` is called, it is minimized or hidden again
 and put back.
 
+Results of `act` and the input tools say `"parked": true` while an app has a
+window on the invisible display. An app that embeds the driver and keeps it running
+between tasks calls `release(pid)` when a task ends (or `release()` for every app),
+so the user finds their windows where they left them.
+
 ### Pixels, for what accessibility does not cover
 
 Canvases, custom-drawn controls and drag targets are not always in the
@@ -205,6 +210,7 @@ things are drawn, and they keep working while the window is out of sight.
 | `wait` | Fresh snapshot once the structure changes, or after `timeout_s` |
 | `commands` | The menu bar as commands; `query` filters by path |
 | `run_command` | Run a menu command by path |
+| `release` | Stop working with an app (or every app, without `pid`): put back windows moved out of sight; its snapshots expire |
 | `screenshot`, `click_at`, `drag`, `scroll_at`, `press`, `type_text` | Pixels and raw input at window points; the window is `window_id`, else the `snapshot`'s, else the app's focused one |
 
 Errors come back as tool results with `isError`, such as an expired snapshot

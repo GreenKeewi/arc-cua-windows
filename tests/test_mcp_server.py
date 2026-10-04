@@ -93,6 +93,9 @@ class RawDriver:
         self.calls.append(("click_at", where, x, y, options))
         return ActResult("done", None, (), 1.0)
 
+    def parked(self, pid):
+        return False
+
     def close(self):
         pass
 
@@ -131,3 +134,32 @@ def test_observe_takes_an_exact_window_and_raw_input_defaults_to_the_snapshot_wi
     app = srv.driver._app(PID)
     call(srv, "type_text", pid=PID, text="hi", snapshot=observed["snapshot"])
     assert app.app.inputs == [("type", B, "hi")]
+
+
+def test_release_expires_the_apps_snapshots_and_puts_it_back():
+    srv = server()
+    observed = call(srv, "observe", pid=PID)["structuredContent"]
+    app = srv.driver._app(PID)
+    assert call(srv, "release", pid=PID)["structuredContent"] == {"released": [PID]}
+    assert app.closed
+    result = call(srv, "act", snapshot=observed["snapshot"], action="CLICK", element="a_submit")
+    assert result["isError"] and "observe again" in result["content"][0]["text"]
+    assert call(srv, "release", pid=PID)["structuredContent"] == {"released": []}
+
+
+def test_release_without_a_pid_releases_every_app():
+    srv = server()
+    call(srv, "observe", pid=PID)
+    srv.driver._app(PID + 1)
+    assert call(srv, "release")["structuredContent"] == {"released": [PID, PID + 1]}
+    assert srv._snapshots == {}
+
+
+def test_results_say_when_a_window_was_parked():
+    srv = server()
+    observed = call(srv, "observe", pid=PID)["structuredContent"]
+    acted = call(srv, "act", snapshot=observed["snapshot"], action="CLICK", element="a_submit")["structuredContent"]
+    assert "parked" not in acted
+    srv.driver._app(PID).app.parked.append(A)  # As when input needed a minimized window on a display.
+    typed = call(srv, "type_text", pid=PID, text="hi", snapshot=observed["snapshot"])["structuredContent"]
+    assert typed["parked"] is True

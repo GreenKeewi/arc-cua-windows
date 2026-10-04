@@ -89,6 +89,11 @@ class MacOSApp:
         if park and (not self.windows() if window_id is None else not self.on_display(window_id)):
             self._parking.park(window_id)
 
+    @property
+    def parked(self) -> bool:
+        """True while windows are on the invisible display, until ``close()``."""
+        return self._parking.active
+
     def out_of_sight(self) -> bool:
         """True when the app has no window on screen but a minimized one, or is hidden."""
         return not self.windows() and self._parking.needed()

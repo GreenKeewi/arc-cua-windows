@@ -4,8 +4,8 @@ Any MCP client (Claude Code, Codex, an agent of your own) can observe and act on
 macOS apps in the background through it. MCP's stdio transport is JSON-RPC with
 one message per line, implemented here directly.
 
-Tools: ``apps``, ``windows``, ``observe``, ``act``, ``wait``, ``commands`` and
-``run_command``; for what accessibility does not cover, ``screenshot``, ``click_at``,
+Tools: ``apps``, ``windows``, ``observe``, ``act``, ``wait``, ``commands``,
+``run_command`` and ``release``; for what accessibility does not cover, ``screenshot``, ``click_at``,
 ``drag``, ``scroll_at``, ``press`` and ``type_text`` at points in the window.
 
 An observation returns a snapshot id and the window's elements, each with an id
@@ -39,7 +39,8 @@ INSTRUCTIONS = (
     "observe(pid, window_id) reads a particular one. Then act(snapshot, action, element). If act returns "
     "status 'changed' or 'stale', "
     "the app changed under the snapshot and nothing was done: decide again from the fresh snapshot it "
-    "returns. commands(pid) lists the app's menu commands; run_command(pid, path) runs one."
+    "returns. commands(pid) lists the app's menu commands; run_command(pid, path) runs one. "
+    "When a result says parked, a window was moved out of sight to work in it; release(pid) puts it back."
 )
 
 _ACTIONS = [kind.value for kind in ActionKind]
@@ -153,6 +154,18 @@ TOOLS: list[dict[str, Any]] = [
                 "path": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
             },
             "required": ["pid", "path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "release",
+        "description": (
+            "Stop working with an app, or with every app when pid is left out, and put back any window "
+            "moved out of sight to work in it (minimized or hidden again). Its snapshots expire."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"pid": {"type": "integer"}},
             "additionalProperties": False,
         },
     },
@@ -354,12 +367,14 @@ class Server:
             _IMAGE: shot.png,
         }
 
-    def _raw_result(self, result: Any) -> dict[str, Any]:
+    def _act_result(self, result: Any, pid: int) -> dict[str, Any]:
         response: dict[str, Any] = {"status": result.status, "elapsed_ms": round(result.elapsed_ms, 1)}
         if result.changes:
             response["changes"] = list(result.changes)
         if result.snapshot is not None:
             response["fresh"] = self._render(result.snapshot)
+        if self.driver.parked(pid):
+            response["parked"] = True
         return response
 
     def _maybe(self, snapshot: str | None) -> DesktopSnapshot | None:
@@ -377,49 +392,45 @@ class Server:
         window_id: int | None = None, snapshot: str | None = None,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._raw_result(self.driver.click_at(
+        return self._act_result(self.driver.click_at(
             where, x, y, button=button, count=count, modifiers=tuple(modifiers or ()), snapshot=kept,
-        ))
+        ), pid)
 
     def tool_drag(
         self, pid: int, points: list[list[float]], window_id: int | None = None, snapshot: str | None = None,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._raw_result(self.driver.drag(where, points, snapshot=kept))
+        return self._act_result(self.driver.drag(where, points, snapshot=kept), pid)
 
     def tool_scroll_at(
         self, pid: int, x: float, y: float, dx: float = 0, dy: float = 0, window_id: int | None = None,
         snapshot: str | None = None,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._raw_result(self.driver.scroll_at(where, x, y, dx=dx, dy=dy, snapshot=kept))
+        return self._act_result(self.driver.scroll_at(where, x, y, dx=dx, dy=dy, snapshot=kept), pid)
 
     def tool_press(
         self, pid: int, keys: str, window_id: int | None = None, snapshot: str | None = None,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._raw_result(self.driver.press(where, keys, snapshot=kept))
+        return self._act_result(self.driver.press(where, keys, snapshot=kept), pid)
 
     def tool_type_text(
         self, pid: int, text: str, window_id: int | None = None, snapshot: str | None = None,
     ) -> dict[str, Any]:
         where, kept = self._raw_where(pid, window_id, snapshot)
-        return self._raw_result(self.driver.type_text(where, text, snapshot=kept))
+        return self._act_result(self.driver.type_text(where, text, snapshot=kept), pid)
 
     def tool_act(
         self, snapshot: str, action: str, element: str | None = None, value: Any = None, key: str | None = None,
         hotkey: str | None = None, direction: str | None = None, modifier: str | None = None,
     ) -> dict[str, Any]:
+        kept = self._snapshot(snapshot)
         result = self.driver.act(
-            self._snapshot(snapshot), action, element, value=value, key=key, hotkey=hotkey,
+            kept, action, element, value=value, key=key, hotkey=hotkey,
             scroll_direction=direction, click_modifier=modifier,
         )
-        response: dict[str, Any] = {"status": result.status, "elapsed_ms": round(result.elapsed_ms, 1)}
-        if result.changes:
-            response["changes"] = list(result.changes)
-        if result.snapshot is not None:
-            response["fresh"] = self._render(result.snapshot)
-        return response
+        return self._act_result(result, kept.context["pid"])
 
     def tool_wait(self, snapshot: str, timeout_s: float = 1.0) -> dict[str, Any]:
         return self._render(self.driver.wait(self._snapshot(snapshot), timeout_s=timeout_s))
@@ -430,6 +441,15 @@ class Server:
     def tool_run_command(self, pid: int, path: str | list[str]) -> dict[str, Any]:
         result = self.driver.run_command(pid, path)
         return {"status": result.status, "elapsed_ms": round(result.elapsed_ms, 1)}
+
+    def tool_release(self, pid: int | None = None) -> dict[str, Any]:
+        if pid is None:
+            released = self.driver.release_all()
+        else:
+            released = [pid] if self.driver.release(pid) else []
+        for name in [n for n, s in self._snapshots.items() if pid is None or s.context.get("pid") == pid]:
+            del self._snapshots[name]
+        return {"released": released}
 
     # ---- protocol ------------------------------------------------------------------
 
