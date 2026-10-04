@@ -7,7 +7,7 @@ import pytest
 
 from arc_cua.backends.macos_changes import Change
 from arc_cua.driver import Driver, WindowTarget
-from arc_cua.errors import StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
+from arc_cua.errors import Cancelled, StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
 from arc_cua.models import ActionKind, Bounds, DesktopElement, DesktopSnapshot
 
 PID = 4242
@@ -330,3 +330,28 @@ def test_parked_reports_windows_moved_out_of_sight(driver):
     assert driver.parked(PID) is True
     driver.release(PID)
     assert driver.parked(PID) is False
+
+
+# ---- cancelling -------------------------------------------------------------------
+
+
+def test_a_cancelled_wait_returns_early(driver):
+    snapshot = driver.observe(PID)
+    threading.Timer(0.05, driver.cancelled.set).start()
+    started = time.monotonic()
+    with pytest.raises(Cancelled):
+        driver.wait(snapshot, timeout_s=5)
+    assert time.monotonic() - started < 0.5
+    assert not driver.cancelled.is_set()  # Spent; the next call runs.
+    assert driver.act(snapshot, "CLICK", "a_submit").done
+
+
+def test_a_cancelled_action_is_not_performed(driver):
+    snapshot = driver.observe(PID)
+    driver.cancelled.set()
+    with pytest.raises(Cancelled):
+        driver.act(snapshot, "CLICK", "a_submit")
+    driver.cancelled.set()
+    with pytest.raises(Cancelled):
+        driver.type_text(PID, "hi", snapshot=snapshot)
+    assert app(driver).desktop.executed == [] and app(driver).app.inputs == []

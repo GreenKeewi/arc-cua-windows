@@ -12,6 +12,12 @@ An observation returns a snapshot id and the window's elements, each with an id
 and the actions it offers; ``act`` names the snapshot, the element and the action.
 If the app's structure changed since the snapshot (a sheet, window or menu came or
 went), ``act`` does not act and returns a fresh snapshot instead.
+
+Requests run one at a time, in order, on the main thread. A reader thread takes
+``notifications/cancelled`` as it arrives: a cancelled ``wait`` returns early, a
+cancelled action that has not started is not performed, a cancelled request still
+queued is skipped, and none of them gets a response. ``ping`` is answered at once,
+even while a request runs.
 """
 
 from __future__ import annotations
@@ -19,7 +25,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import queue
 import sys
+import threading
 from collections import OrderedDict
 from typing import IO, Any
 
@@ -287,6 +295,11 @@ class Server:
         self.driver = driver
         self._snapshots: OrderedDict[str, DesktopSnapshot] = OrderedDict()
         self._next = 0
+        self._lock = threading.Lock()  # Guards the request bookkeeping below and standard output.
+        self._out: IO[str] | None = None
+        self._running: str | None = None  # Key of the request in progress.
+        self._pending: set[str] = set()  # Keys of requests read and not yet answered.
+        self._cancelled: set[str] = set()
 
     # ---- snapshots ---------------------------------------------------------------
 
@@ -494,21 +507,73 @@ class Server:
         return {"content": parts, "structuredContent": content}
 
     def serve(self, stdin: IO[str], stdout: IO[str]) -> None:
-        for line in stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                reply: dict[str, Any] | None = {
-                    "jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"},
-                }
-            else:
-                reply = self.handle(message) if isinstance(message, dict) else None
+        """Answer requests until standard input ends; requests already read still run."""
+        self._out = stdout
+        requests: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        threading.Thread(target=self._read, args=(stdin, requests), name="arc-cua-mcp-input", daemon=True).start()
+        while (message := requests.get()) is not None:
+            key = _key(message.get("id"))
+            with self._lock:
+                if key in self._cancelled:
+                    self._finish(key)
+                    continue
+                self._running = key
+                self.driver.cancelled.clear()
+            reply = self.handle(message)
+            with self._lock:
+                self._running = None
+                if key in self._cancelled:
+                    reply = None
+                self._finish(key)
             if reply is not None:
-                stdout.write(json.dumps(reply, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
-                stdout.flush()
+                self._write(reply)
+
+    def _read(self, stdin: IO[str], requests: queue.Queue[dict[str, Any] | None]) -> None:
+        try:
+            for line in stdin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    self._write({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+                    continue
+                if not isinstance(message, dict):
+                    continue
+                method = message.get("method")
+                if method == "notifications/cancelled":
+                    self._cancel((message.get("params") or {}).get("requestId"))
+                elif method == "ping" and message.get("id") is not None:
+                    self._write(self.handle(message))
+                else:
+                    if message.get("id") is not None:
+                        with self._lock:
+                            self._pending.add(_key(message["id"]))
+                    requests.put(message)
+        finally:
+            requests.put(None)
+
+    def _cancel(self, ident: Any) -> None:
+        key = _key(ident)
+        with self._lock:
+            if key not in self._pending:
+                return  # Already answered, or never sent.
+            self._cancelled.add(key)
+            if key == self._running:
+                self.driver.cancelled.set()
+
+    def _finish(self, key: str) -> None:
+        self._pending.discard(key)
+        self._cancelled.discard(key)
+
+    def _write(self, reply: dict[str, Any] | None) -> None:
+        if reply is None or self._out is None:
+            return
+        line = json.dumps(reply, ensure_ascii=False, separators=(",", ":"), default=str) + "\n"
+        with self._lock:
+            self._out.write(line)
+            self._out.flush()
 
     def close(self) -> None:
         self.driver.close()
@@ -530,6 +595,11 @@ def _element(element: Any) -> dict[str, Any]:
     if element.parent_id:
         data["parent"] = element.parent_id
     return data
+
+
+def _key(ident: Any) -> str:
+    """A request id as a set key that keeps 1 and "1" apart."""
+    return json.dumps(ident)
 
 
 def _version() -> str:

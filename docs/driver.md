@@ -213,6 +213,22 @@ things are drawn, and they keep working while the window is out of sight.
 | `release` | Stop working with an app (or every app, without `pid`): put back windows moved out of sight; its snapshots expire |
 | `screenshot`, `click_at`, `drag`, `scroll_at`, `press`, `type_text` | Pixels and raw input at window points; the window is `window_id`, else the `snapshot`'s, else the app's focused one |
 
+### Stopping
+
+Requests run one at a time, in order. To stop one, send MCP's
+`notifications/cancelled` with its id: a `wait` returns early, an action that has not
+started is not performed, a request still queued is skipped, and none of them gets a
+response. An action already under way finishes (most take milliseconds), and so does
+moving a window onto the invisible display or back. `ping` is answered at once, even
+while a request runs.
+
+To stop the server, close its standard input: requests already sent still run, then
+windows moved out of sight are put back and it exits. SIGTERM and SIGHUP put them
+back too. A killed server cannot: its invisible display disappears and macOS shows
+those windows on the user's screen. So a host stops a task by cancelling, ends the
+session by closing standard input, and sends SIGTERM only if the server has not
+exited after that.
+
 Errors come back as tool results with `isError`, such as an expired snapshot
 ("observe again") or an action an element does not offer.
 

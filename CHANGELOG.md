@@ -9,6 +9,10 @@
   without `pid` it releases every app. `act` and the input tools report
   `"parked": true` while an app has such a window. In Python: `Driver.release`,
   `Driver.release_all` and `Driver.parked`.
+- **Cancellation.** `notifications/cancelled` stops a request: a `wait` returns
+  early, an action not yet started is not performed, a queued request is skipped,
+  and none gets a response. `ping` is answered while a request runs. In Python, set
+  `Driver.cancelled` from another thread; the call raises `Cancelled`.
 
 ## 0.1.0 — 2026-10-04
 

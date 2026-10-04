@@ -24,11 +24,12 @@ default; use ``wait`` when the caller expects the app to take a while to react.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from .errors import StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
+from .errors import Cancelled, StaleDesktopState, TargetUnavailable, UnsupportedDesktopAction
 from .models import ActionKind, Bounds, DesktopSnapshot, ExecutableAction
 
 _TARGETED = frozenset({
@@ -36,6 +37,7 @@ _TARGETED = frozenset({
     ActionKind.SET_VALUE, ActionKind.DRAG_TO, ActionKind.DRAG_BY,
 })
 _MARKER = "changes_seen"
+_CANCEL_POLL_S = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +123,10 @@ class Driver:
             raise RuntimeError("arc_cua.Driver controls macOS apps and needs macOS")
         self._factory = app_factory or _App
         self._apps: dict[int, Any] = {}
+        # Set from another thread to stop the operation in progress: a wait returns early
+        # and an action not yet started is not performed; either raises Cancelled.
+        # Moving a window onto the invisible display, or back, always completes.
+        self.cancelled = threading.Event()
 
     def __enter__(self) -> Driver:
         return self
@@ -218,11 +224,24 @@ class Driver:
         target = self.target_of(snapshot)
         app = self._app(target.pid)
         seen = snapshot.context.get(_MARKER, app.journal.sequence)
-        if app.journal.wait_after(seen, timeout_s):
-            last = app.journal.sequence
-            while app.journal.wait_after(last, quiet_s):
+        deadline = time.monotonic() + timeout_s
+        while True:
+            self._stop_if_cancelled()
+            remaining = deadline - time.monotonic()
+            if app.journal.wait_after(seen, max(0.0, min(remaining, _CANCEL_POLL_S))):
                 last = app.journal.sequence
+                while app.journal.wait_after(last, quiet_s):
+                    self._stop_if_cancelled()
+                    last = app.journal.sequence
+                break
+            if remaining <= _CANCEL_POLL_S:
+                break
         return self.observe(target)
+
+    def _stop_if_cancelled(self) -> None:
+        if self.cancelled.is_set():
+            self.cancelled.clear()
+            raise Cancelled("Cancelled; nothing more was done")
 
     @staticmethod
     def commands(where: Where, *, query: str | None = None) -> list[Any]:
@@ -241,6 +260,7 @@ class Driver:
         from .backends.macos_menus import run_command
 
         started = time.perf_counter()
+        self._stop_if_cancelled()
         pid = _pid(where)
         with self._app(pid).app.input_scope():
             run_command(pid, path)
@@ -269,6 +289,7 @@ class Driver:
         refused, snapshot = self._check(snapshot, started)
         if refused is not None:
             return refused
+        self._stop_if_cancelled()
         try:
             self._app(window.pid).backend(window.window_id).execute(snapshot, action)
         except StaleDesktopState:
@@ -337,6 +358,7 @@ class Driver:
             refused, _ = self._check(snapshot, started)
             if refused is not None:
                 return refused
+        self._stop_if_cancelled()
         send()
         return ActResult("done", None, (), (time.perf_counter() - started) * 1000)
 

@@ -16,3 +16,7 @@ class UnsupportedDesktopAction(JevDesktopError):
 
 class TargetUnavailable(JevDesktopError):
     """The target app quit, or has no window that can be observed and controlled."""
+
+
+class Cancelled(JevDesktopError):
+    """The caller cancelled the operation; nothing more was done."""

@@ -3,6 +3,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import queue
+import threading
+import time
 
 from test_driver import PID, A, B, FakeApp
 
@@ -163,3 +166,106 @@ def test_results_say_when_a_window_was_parked():
     srv.driver._app(PID).app.parked.append(A)  # As when input needed a minimized window on a display.
     typed = call(srv, "type_text", pid=PID, text="hi", snapshot=observed["snapshot"])["structuredContent"]
     assert typed["parked"] is True
+
+
+class Lines:
+    """Standard input that a test writes to while the server reads it."""
+
+    def __init__(self) -> None:
+        self._lines: queue.Queue[str | None] = queue.Queue()
+
+    def send(self, message: dict) -> None:
+        self._lines.put(json.dumps(message) + "\n")
+
+    def close(self) -> None:
+        self._lines.put(None)
+
+    def __iter__(self):
+        while (line := self._lines.get()) is not None:
+            yield line
+
+
+class Replies(io.StringIO):
+    def by_id(self) -> dict:
+        return {r["id"]: r for r in map(json.loads, self.getvalue().splitlines())}
+
+    def wait_for(self, ident, timeout_s: float = 2.0) -> dict:
+        deadline = time.monotonic() + timeout_s
+        while ident not in self.by_id():
+            assert time.monotonic() < deadline, f"no reply to {ident}"
+            time.sleep(0.005)
+        return self.by_id()[ident]
+
+
+def serving(srv: Server):
+    stdin, stdout = Lines(), Replies()
+    thread = threading.Thread(target=srv.serve, args=(stdin, stdout), daemon=True)
+    thread.start()
+    return stdin, stdout, thread
+
+
+def request(ident, name: str, **arguments) -> dict:
+    return {"jsonrpc": "2.0", "id": ident, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
+
+
+def cancel(ident) -> dict:
+    return {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": ident}}
+
+
+def test_a_cancelled_wait_stops_early_and_gets_no_response():
+    srv = server()
+    stdin, stdout, thread = serving(srv)
+    stdin.send(request(1, "observe", pid=PID))
+    snapshot = stdout.wait_for(1)["result"]["structuredContent"]["snapshot"]
+    started = time.monotonic()
+    stdin.send(request(2, "wait", snapshot=snapshot, timeout_s=10))
+    time.sleep(0.05)
+    stdin.send({"jsonrpc": "2.0", "id": 3, "method": "ping"})
+    assert stdout.wait_for(3)["result"] == {}  # Answered while the wait runs.
+    stdin.send(cancel(2))
+    stdin.send(request(4, "observe", pid=PID))
+    stdout.wait_for(4)
+    assert time.monotonic() - started < 1
+    assert 2 not in stdout.by_id()
+    stdin.close()
+    thread.join(2)
+    assert not thread.is_alive()
+
+
+def test_a_cancelled_request_still_queued_is_never_run():
+    srv = server()
+    stdin, stdout, thread = serving(srv)
+    stdin.send(request(1, "observe", pid=PID))
+    snapshot = stdout.wait_for(1)["result"]["structuredContent"]["snapshot"]
+    stdin.send(request(2, "wait", snapshot=snapshot, timeout_s=10))
+    stdin.send(request("click", "act", snapshot=snapshot, action="CLICK", element="a_submit"))
+    stdin.send(cancel("click"))
+    stdin.send(cancel(2))
+    stdin.send(request(5, "observe", pid=PID))
+    stdout.wait_for(5)
+    assert srv.driver._app(PID).desktop.executed == []
+    assert set(stdout.by_id()) == {1, 5}
+    stdin.close()
+    thread.join(2)
+
+
+def test_a_late_cancel_does_not_touch_the_next_request():
+    srv = server()
+    stdin, stdout, thread = serving(srv)
+    stdin.send(request(1, "observe", pid=PID))
+    snapshot = stdout.wait_for(1)["result"]["structuredContent"]["snapshot"]
+    stdin.send(cancel(1))  # Already answered.
+    stdin.send(request(2, "act", snapshot=snapshot, action="CLICK", element="a_submit"))
+    assert stdout.wait_for(2)["result"]["structuredContent"]["status"] == "done"
+    stdin.close()
+    thread.join(2)
+
+
+def test_requests_read_before_input_ends_still_run():
+    srv = server()
+    stdin, stdout, thread = serving(srv)
+    stdin.send(request(1, "observe", pid=PID))
+    stdin.send(request(2, "wait", snapshot="s1", timeout_s=0.2))
+    stdin.close()
+    thread.join(2)
+    assert set(stdout.by_id()) == {1, 2}
