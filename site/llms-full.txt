@@ -514,9 +514,9 @@ Convenience: `result_to_dict(executor.run(subtask_from_dict(payload)))`.
 ## Driver
 
 `Driver` (from arc_cua; macOS) observes apps and acts on them in the background with
-no decision model. `arc-cua mcp` serves the same over MCP stdio, with tools apps,
-windows, observe, act, wait, commands, run_command, screenshot, click_at, drag,
-scroll_at, press and type_text. Guide: docs/driver.md.
+no decision model. `arc-cua mcp` serves the same over MCP stdio, with tools status,
+apps, windows, observe, act, settle, wait, commands, run_command, release, screenshot,
+click_at, drag, scroll_at, press and type_text. Guide: docs/driver.md.
 
 | Method | Returns / does |
 |---|---|
@@ -531,15 +531,25 @@ scroll_at, press and type_text. Guide: docs/driver.md.
 | run_command(pid, path) | runs a menu command by path ("File > Export > PDF…" or a tuple); ActResult |
 | screenshot(pid or WindowTarget, *, snapshot=None, max_side=1568) | Screenshot(png, width, height, scale = pixels per point, window_id, title), with attached sheets |
 | click_at / drag / scroll_at / press / type_text(pid or WindowTarget, ...) | raw input at points relative to the window's top-left corner, to that window even when covered (an attached sheet takes it); snapshot= sends it to the snapshot's window and refuses on change |
-| release(pid), close() | stop working with an app / all apps; moved windows go back |
+| settle(snapshot, *, reaction_s=0.6, quiet_s=0.15, timeout_s=2.0) | waits for the app to finish reacting since snapshot; returns (fresh snapshot, SettleReport) |
+| status() | version, Python and macOS versions, permissions (accessibility, screen_recording), background_input, virtual_display; needs no permission |
+| release(pid), release_all(), close() | stop working with an app / all apps; moved windows go back (minimized or hidden again), its snapshots expire |
+| parked(pid) | whether the app has windows on the invisible display; MCP act and input results report `parked` |
+| cancelled | a threading.Event; set it from another thread to stop the current call, which raises Cancelled |
 
 ActResult.status is "done", "changed" (the app's structure, its windows, sheets or
 menus, changed since the snapshot; nothing was done) or "stale" (the target
-changed); ActResult.snapshot is then a fresh snapshot of the same window. A window
+changed); ActResult.snapshot is then a fresh snapshot of the same window.
+act, run_command and the input methods take settle=True: the driver waits for the
+app's accessibility notifications to go quiet (0.15 s after a change, 0.6 s with no
+change, 2 s at most; web pages are also re-read every 0.1 s) and returns a fresh
+snapshot with ActResult.settled = SettleReport(reacted, timed_out, elapsed_ms, cancelled).
+reacted False: the app posted nothing and the window is the same, so the action most
+likely did nothing; reacted None: notifications could not be watched. A window
 that was closed or replaced raises TargetUnavailable rather than being swapped for
 another. Structural changes come from
 a per-app journal of accessibility notifications; value changes do not count, so
-several actions on one snapshot work. Nothing waits after an action. Menu commands
+several actions on one snapshot work. Nothing waits after an action unless settle=True. Menu commands
 act on the app's key window, not necessarily the observed one. In web content and
 document text views, text is typed (so pages see input events and documents record an
 edit), toggles are clicked, sliders, steppers and date fields (YYYY-MM-DD) are stepped,
@@ -547,6 +557,19 @@ and scrolling moves scroll bars through accessibility. HTML5 drag and drop is no
 supported (it needs a real on-screen pointer drag). Minimized
 windows and hidden apps stay out of sight for accessibility actions and menu
 commands; input that needs events moves the window onto an invisible display first.
+When an Electron or Chromium Embedded Framework app shows no web content to
+accessibility, snapshot.context["hint"] (MCP: observe's `hint`) is
+{"code": "relaunch_for_accessibility", "message", "args": ["--force-renderer-accessibility"]};
+the driver never relaunches apps itself.
+
+Over MCP, requests run one at a time; `notifications/cancelled` stops one (a wait or
+settle returns early, an action not yet started is not performed, a queued request is
+skipped; none gets a response), and `ping` is answered mid-request. Closing standard
+input, SIGTERM or SIGHUP put moved windows back before exit. Tool errors are results
+with isError and structuredContent {code, message}; codes: permission_denied,
+target_unavailable, snapshot_expired, element_not_found, action_not_offered,
+command_not_found, invalid_arguments, unsupported_action, capture_failed,
+background_unavailable, unknown_tool, internal_error.
 
 ## Command line
 
@@ -803,7 +826,14 @@ All inherit from `JevDesktopError(RuntimeError)`:
 | StaleDesktopState | Target changed between observation and execution |
 | InvalidDecision | Policy returned an illegal action for the current snapshot |
 | UnsupportedDesktopAction | Backend does not support the requested action kind |
+| ElementNotFound, ActionNotOffered, CommandNotFound, InvalidArguments, CaptureFailed | Subclasses of UnsupportedDesktopAction raised by the driver |
 | TargetUnavailable | The target app quit, or has no window that can be observed and controlled |
+| Cancelled | A driver call was stopped through Driver.cancelled |
+
+Each has a stable `code` attribute (stale, invalid_decision, unsupported_action,
+element_not_found, action_not_offered, command_not_found, invalid_arguments,
+capture_failed, target_unavailable, cancelled), the same codes `arc-cua mcp` reports.
+A missing permission raises PermissionError.
 
 StaleDesktopState is caught by the runtime and triggers re-observation. InvalidDecision and TargetUnavailable propagate to the caller. Other backend exceptions are caught and return NEEDS_AGENT.
 

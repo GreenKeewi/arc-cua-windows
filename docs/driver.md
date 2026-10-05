@@ -28,7 +28,7 @@ the app that runs `arc-cua mcp`. The `status` tool reports what the server's
 process has, as macOS sees it:
 
 ```json
-{"version": "0.1.0", "python": "3.12.14", "macos": "26.6.2",
+{"version": "0.1.1", "python": "3.12.14", "macos": "26.6.2",
  "permissions": {"accessibility": true, "screen_recording": true},
  "background_input": true, "virtual_display": true}
 ```
@@ -371,27 +371,30 @@ On an Apple M5 running macOS 26.6, through `arc-cua mcp` (medians), single opera
 
 | | |
 |---|---|
-| Observe Calculator / System Settings | 10 / 23 ms |
-| Observe Finder showing 2,000 files | 36 ms |
-| Observe with a screenshot (Calculator) | 33 ms |
-| Click until the effect is visible | 11 ms |
-| One step: observe, click, observe | 21 ms |
-| Type 200 characters into a field | 5 ms |
+| Observe Calculator / System Settings | 11 / 26 ms |
+| Observe Finder showing 2,000 files | 41 ms |
+| Observe with a screenshot (Calculator) | 40 ms |
+| Click until the effect is visible | 12 ms |
+| One step: observe, click, observe | 23 ms |
+| Click with `settle: true`, until the settled snapshot returns | 0.22 s |
+| Type 200 characters into a field | 6 ms |
 | Run a menu command until the effect is visible | 9 ms |
-| Observe and click in a minimized window / a hidden app | 56 / 33 ms |
-| Act on a snapshot taken before a sheet opened | refused, with a fresh snapshot of the window and its sheet, in 30 ms |
+| Observe and click in a minimized window / a hidden app | 49 / 28 ms |
+| Act on a snapshot taken before a sheet opened | refused, with a fresh snapshot of the window and its sheet, in 26 ms |
 
-And multi-step workflows, end to end (all 5/5):
+And multi-step workflows, end to end (all 5/5). "As an agent" settles after every
+action and decides on the settled snapshot, as a model-driven agent must; the other
+column polls for the label the script expects next:
 
-| Workflow | Steps | Time |
-|---|---|---|
-| Calculator: (12 + 30) × 4 with its buttons | 9 | 0.28 s |
-| TextEdit: replace a document's text and save it | 2 | 1.6 s |
-| Finder: open two folders and select a file | 3 | 1.1 s |
-| A native form: two fields, a checkbox, a popup, a sheet, submit, a menu command | 9 | 1.4 s |
-| The same form in a minimized window / a covered window | 3 / 2 | 77 / 77 ms |
-| A web signup form: text, email, dropdown, date, slider, radio, checkbox, submit | 8 | 1.3 s |
-| A web field 45 rows down: scroll to it, edit it, save | 2 | 0.58 s |
+| Workflow | Steps | Time | As an agent |
+|---|---|---|---|
+| Calculator: (12 + 30) × 4 with its buttons | 9 | 0.23 s | 2.1 s |
+| TextEdit: replace a document's text and save it | 2 | 1.6 s | 2.4 s |
+| Finder: open two folders and select a file | 3 | 1.1 s | 1.8 s |
+| A native form: two fields, a checkbox, a popup, a sheet, submit, a menu command | 9 | 1.4 s | 3.4 s |
+| The same form in a minimized window / a covered window | 3 / 2 | 65 / 89 ms | 0.64 / 0.54 s |
+| A web signup form: text, email, dropdown, date, slider, radio, checkbox, submit | 8 | 1.3 s | 3.3 s |
+| A web field 45 rows down: scroll to it, edit it, save | 2 | 0.60 s | 3.4 s |
 
 `python benchmarks/run.py primitives` reproduces these on your Mac, against real apps
 and a native fixture app whose state is checked without going through the driver; it
