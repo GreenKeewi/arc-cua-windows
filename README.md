@@ -2,9 +2,9 @@
 
 Public Windows fork of [shhivv/arc-cua](https://github.com/shhivv/arc-cua), preserving Shiv Shanmugam's MIT license and upstream authorship.
 
-**[Windows setup and model-free demo](docs/windows.md)** · **[Preview downloads](https://github.com/GreenKeewi/arc-cua-windows/releases)** · **[CI evidence](https://github.com/GreenKeewi/arc-cua-windows/actions)**
+**[Windows setup and model-free demo](docs/windows.md)** · **[Corrected preview download](https://github.com/GreenKeewi/arc-cua-windows/releases/tag/windows-preview-1a72de79831e)** · **[CI evidence](https://github.com/GreenKeewi/arc-cua-windows/actions)**
 
-Adds named UIA controls, foreground clicks/text/scroll/shortcuts, the existing decision loop, CLI and local MCP. Requires a visible, restored Windows desktop. No seamless background/minimized control or Windows OCR. Downloads run locally; this repository does not provide a hosted Windows desktop. Live Windows validation is separate from cloud contract tests; see [validation notes](docs/windows-validation.md).
+Adds named UIA controls, foreground clicks/text/scroll/shortcuts, the existing decision loop, CLI and local MCP. Requires a visible, restored Windows desktop. No seamless background/minimized control or Windows OCR. Downloads run locally; this repository does not provide a hosted Windows desktop. The model-free WinForms demo passed on a hosted Windows Server 2025 desktop; Windows 10/11 app validation remains manual. See [test and desktop evidence](docs/windows-validation.md).
 
 The original upstream documentation follows; its macOS background-control claims apply only to that backend.
 

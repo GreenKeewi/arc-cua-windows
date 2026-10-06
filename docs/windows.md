@@ -7,7 +7,7 @@ This preview runs on a Windows desktop. A public download is not a cloud-hosted 
 ## Easiest setup: downloadable preview
 
 1. Use Windows 10/11 x64. Install **Python 3.12 x64** from python.org, including the Python launcher (`py`).
-2. Download `arc-cua-windows-preview.zip` from the fork's [Releases](https://github.com/GreenKeewi/arc-cua-windows/releases). The CI release bundles the project wheel and Windows dependency wheels, not a Python runtime or standalone EXE.
+2. Download `arc-cua-windows-preview.zip` from the [corrected preview release](https://github.com/GreenKeewi/arc-cua-windows/releases/tag/windows-preview-1a72de79831e). The CI release bundles the project wheel and Windows dependency wheels, not a Python runtime or standalone EXE.
 3. Extract the ZIP fully into a folder you can write to. Open `install.cmd`. It creates a local virtual environment and installs from the bundled wheels, without downloading packages.
 4. Leave the desktop unlocked and stop moving the mouse/typing while the demo runs. Open `demo.cmd` in Command Prompt to see its output.
 5. A disposable form appears. The demo enters `Hello from arc-cua + {literal} café`, performs Ctrl+A and End, scrolls its list, clicks **Apply message**, and checks the result label. It closes the form afterward. No model, key, network access, personal files or other applications are involved.

@@ -39,3 +39,42 @@ First public implementation: `b65a9a523fc84a37959d6ea853e29efe314110f6`.
 The Windows package job published a ZIP, but its separate live fixture attempt returned `NEEDS_AGENT` / `live_windows_validated: false`: all five actions were dispatched, and the exact result text verification failed. This is **not** evidence of successful end-to-end Windows control. Follow-up inspection found shortcut letter keys were sent as Unicode packets; the subsequent fix sends physical key/shortcut sequences with `vk_packet=False` and adds fixture-only diagnostics. A rerun is required to establish whether this resolves the failure.
 
 Windows local manual checks are listed in [windows.md](windows.md).
+
+
+## Corrected preview: hosted Windows fixture passed
+
+Implementation/fix commit: `1a72de79831e94ef263848cc4d0c2d19e8dd7338`.
+[CI run 37396427697](https://github.com/GreenKeewi/arc-cua-windows/actions/runs/37396427697) completed successfully, including contract tests, lint, builds, bundling and prerelease publication.
+
+| Runner | Python | Passed | Skipped |
+|---|---|---:|---:|
+| Windows | 3.12 | 409 | 8 macOS framework cases |
+| Windows | 3.13 | 409 | 8 macOS framework cases |
+| Linux | 3.12 | 408 | 8 macOS cases + Windows native import |
+| Linux | 3.13 | 408 | 8 macOS cases + Windows native import |
+
+The extra 14 tests compared with this workspace are upstream live headless Chrome fixture tests: Chrome was installed on the GitHub runners. This provides live Chrome regression evidence on both Windows and Linux. The corrected local Linux suite reported **394 passed, 10 skipped** in 26.06 seconds; the focused backend/CLI/MCP/validation selection reported **90 passed, 1 skipped** in 3.86 seconds.
+
+The hosted native smoke ran on **Microsoft Windows Server 2025, 10.0.26100, x64, Python 3.12**. Its actual JSON reported:
+
+```json
+{
+  "status": "SUBTASK_COMPLETE",
+  "live_windows_validated": true,
+  "actions": ["TYPE_TEXT", "HOTKEY", "PRESS_KEY", "SCROLL", "CLICK"],
+  "reason": null
+}
+```
+
+Its final observed `Message` value was `Hello from arc-cua + {literal} café`, and the result label was exactly `Received: Hello from arc-cua + {literal} café`. The demo's verification callback checked that exact label. This demonstrates the foreground/native path end-to-end **on this disposable WinForms fixture only**. It does not establish behavior on all Windows controls, verify every shortcut's effect independently, or replace Windows 10/11 manual checks. The full JSON is retained in the run's `hosted-windows-smoke-evidence` artifact and package job logs.
+
+**Use the corrected preview**, not the first preview whose smoke failed:
+
+- [Public corrected release](https://github.com/GreenKeewi/arc-cua-windows/releases/tag/windows-preview-1a72de79831e)
+- [Download arc-cua-windows-preview.zip](https://github.com/GreenKeewi/arc-cua-windows/releases/download/windows-preview-1a72de79831e/arc-cua-windows-preview.zip)
+- ZIP size: 8,549,512 bytes.
+- SHA256: `1eaa054c00e74ae2051dc06b83c5127175a830cd75041bb5089650d4129bfb9a`.
+
+The corrected ZIP was also downloaded without authentication and verified locally against its published SHA256, commit stamp and every bundled wheel hash. Its wheel contains the shortcut fix and fixture; its MIT license content matches upstream (Windows packaging uses CRLF line endings). No .env or virtual environment files are included.
+
+No model/provider credentials were used in any of these runs. General Windows 10/11 app compatibility, DPI, multiple monitors, non-US layouts, minimized/locked/elevated refusal, and an actual MCP client's round trip remain manual checks. Source attribution and MIT license remain unchanged.
