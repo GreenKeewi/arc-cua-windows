@@ -291,3 +291,13 @@ def test_windows_native_dependency_imports():
     from arc_cua.backends.windows_uia import WindowsUIAAdapter
 
     assert WindowsUIAAdapter().desktop.backend.name == "uia"
+
+
+def test_native_shortcuts_are_virtual_keys_not_unicode_packets():
+    adapter, _, _, _ = native_fake()
+    calls = []
+    adapter.keyboard.send_keys = lambda sequence, **kwargs: calls.append((sequence, kwargs))
+    adapter.perform(100, None, ExecutableAction(K.HOTKEY, hotkey="MOD+A"))
+    adapter.perform(100, None, ExecutableAction(K.PRESS_KEY, key="ENTER"))
+    assert calls[0][0] == "{VK_CONTROL down}{A}{VK_CONTROL up}"
+    assert all(kwargs["vk_packet"] is False for _, kwargs in calls)

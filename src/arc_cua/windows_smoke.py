@@ -68,6 +68,9 @@ def main() -> int:
             passed = result.status == TerminalKind.SUBTASK_COMPLETE and result.actions_taken == 5
             print(json.dumps({"status": result.status.value, "live_windows_validated": passed,
                               "actions": [r.action.kind.value for r in result.history], "reason": result.reason,
+                              "fixture_controls": [{"role": e.role, "name": e.name, "value": e.value}
+                                                   for e in result.final_snapshot.elements
+                                                   if e.role in ("TextField", "Text", "Button") and e.visible],
                               "scope": "Disposable WinForms fixture only; other apps need manual testing"}))
             return 0 if passed else 1
     except Exception as exc:

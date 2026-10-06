@@ -92,9 +92,9 @@ The existing `DesktopExecutor` loop works with `WindowsUIABackend`, including ac
 For the existing JEV provider, obtain your own TypeSafe credentials and set them **only in the local process environment**:
 
 ```powershell
-$env:TYPESAFE_API_KEY = Read-Host 'Your TypeSafe API key' -MaskInput
-# Read-Host -MaskInput requires PowerShell 7; Windows PowerShell 5 users may
-# set the environment variable privately using their preferred local method.
+$key = Read-Host 'Your TypeSafe API key' -AsSecureString
+$env:TYPESAFE_API_KEY = [System.Net.NetworkCredential]::new('', $key).Password
+Remove-Variable key
 @'
 {
   "app":{"pid":1234},

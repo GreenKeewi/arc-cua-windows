@@ -197,7 +197,9 @@ class WindowsUIAAdapter:
                                     with_spaces=True, with_tabs=True, with_newlines=True)
         elif kind in {ActionKind.HOTKEY, ActionKind.PRESS_KEY}:
             sequence = hotkey_sequence(action.hotkey) if kind == ActionKind.HOTKEY else key_sequence(action.key)
-            self.keyboard.send_keys(sequence, pause=0.01)
+            # Braced single-letter keys otherwise become Unicode packets, which
+            # are text input rather than Ctrl/Alt shortcuts in native edit controls.
+            self.keyboard.send_keys(sequence, pause=0.01, vk_packet=False)
         elif kind == ActionKind.SCROLL:
             target = ref or self.desktop.window(handle=hwnd).wrapper_object()
             # UIA ScrollPattern: NoAmount=2, SmallDecrement=0, SmallIncrement=3.
