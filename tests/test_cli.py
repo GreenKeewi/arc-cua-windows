@@ -63,7 +63,7 @@ def test_run_prints_one_line_per_action_then_the_result(monkeypatch):
     assert lines[0]["confidence"] == 0.9
     assert lines[1]["status"] == "SUBTASK_COMPLETE"
     assert lines[1]["actions_taken"] == 1
-    assert made == {"api_key": "secret-key", "app": {"pid": 4242}, "backend": "hybrid"}
+    assert made == {"api_key": "secret-key", "app": {"pid": 4242}, "backend": "windows" if sys.platform == "win32" else "hybrid"}
 
 
 def test_backend_is_opened_and_closed_around_the_run(monkeypatch):

@@ -1,0 +1,93 @@
+name: Windows MVP validation and preview
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.12', '3.13']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[dev,browser,windows]" build
+      - name: Portable tests (macOS framework tests explicitly skipped)
+        run: python -m pytest -q --junitxml=test-results.xml
+      - name: Lint Windows implementation and integration
+        run: >-
+          ruff check src/arc_cua/backends/windows_uia.py src/arc_cua/windows_driver.py
+          src/arc_cua/windows_smoke.py src/arc_cua/cli.py src/arc_cua/mcp_server.py
+          src/arc_cua/validation.py src/arc_cua/backends/__init__.py
+          tests/test_windows_uia.py tests/conftest.py
+      - name: Build Python package
+        run: python -m build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: contracts-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            test-results.xml
+            dist/*
+  package:
+    needs: contracts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build
+      - run: python -m build
+      - name: Bundle wheel and Windows dependencies for offline installation
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory preview/wheels -Force
+          $wheel = (Get-ChildItem dist/*.whl).FullName
+          python -m pip download --dest preview/wheels "$wheel[windows,browser]"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item packaging/*.cmd preview/
+          Copy-Item docs/windows.md preview/README.md
+          Copy-Item LICENSE preview/
+          git rev-parse HEAD | Out-File preview/COMMIT.txt -Encoding utf8
+          Get-ChildItem preview/wheels/* | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash)  $($_.Name)" } | Out-File preview/SHA256SUMS.txt -Encoding utf8
+          Compress-Archive -Path preview/* -DestinationPath arc-cua-windows-preview.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arc-cua-windows-preview
+          path: arc-cua-windows-preview.zip
+          retention-days: 90
+      - name: Install native dependencies and try disposable live fixture
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          python -m pip install --no-index --find-links preview/wheels "arc-cua[windows,browser]==0.1.2.dev1"
+          python -m arc_cua windows-smoke | Tee-Object smoke-result.json
+          $smokeExit = $LASTEXITCODE
+          "## Hosted Windows fixture attempt" >> $env:GITHUB_STEP_SUMMARY
+          "Exit code: $smokeExit. This validates only the disposable form if live_windows_validated is true. A hosted runner may lack usable desktop focus; manual Windows testing is still required." >> $env:GITHUB_STEP_SUMMARY
+          Get-Content smoke-result.json >> $env:GITHUB_STEP_SUMMARY
+          exit $smokeExit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hosted-windows-smoke-evidence
+          path: smoke-result.json
+      - name: Publish public prerelease download
+        if: github.event_name == 'push' && github.repository == 'GreenKeewi/arc-cua-windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "windows-preview-$($env:GITHUB_SHA.Substring(0, 12))"
+          gh release create $tag arc-cua-windows-preview.zip --target $env:GITHUB_SHA --prerelease --title "Windows MVP preview $($env:GITHUB_SHA.Substring(0, 7))" --notes "Foreground Windows UIA preview. Python 3.12 required. Extract and run install.cmd, then demo.cmd. Portable tests and packaging run in CI; consult the hosted-windows-smoke-evidence artifact for fixture-only desktop evidence. General Windows applications, DPI and foreground behavior require manual validation. No OCR or minimized/background control. MIT fork of shhivv/arc-cua."
+    permissions:
+      contents: write

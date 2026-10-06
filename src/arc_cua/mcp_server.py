@@ -348,10 +348,41 @@ def error_code(exc: BaseException) -> str:
 class Server:
     def __init__(self, driver: Any = None) -> None:
         if driver is None:
-            from .driver import Driver
+            if sys.platform == "win32":
+                from .windows_driver import WindowsDriver
 
-            driver = Driver()
+                driver = WindowsDriver()
+            else:
+                from .driver import Driver
+
+                driver = Driver()
         self.driver = driver
+        self.tools = TOOLS
+        self.instructions = INSTRUCTIONS
+        from .windows_driver import WINDOWS_INSTRUCTIONS, WINDOWS_TOOL_NAMES, WindowsDriver
+
+        if isinstance(driver, WindowsDriver):
+            import copy
+
+            self.instructions = WINDOWS_INSTRUCTIONS
+            self.tools = copy.deepcopy([t for t in TOOLS if t["name"] in WINDOWS_TOOL_NAMES])
+            for tool in self.tools:
+                tool["description"] = {
+                    "status": "Windows MVP capabilities; foreground interaction only.",
+                    "apps": "Processes with visible desktop windows; name is a window title.",
+                    "windows": "Visible windows for a PID, including minimized flags; restore before observation.",
+                    "observe": "Read UIA controls of an exact visible restored window; returns a snapshot for act.",
+                    "act": "Act on a snapshot: native foreground input; MOD is Ctrl. Stale means observe and retry.",
+                    "settle": "Poll UIA revisions until quiet or timeout; synchronous providers can block.",
+                    "wait": "Wait for a UIA revision change or timeout and observe again.",
+                    "release": "Release cached Windows backends and snapshots.",
+                }[tool["name"]]
+                if tool["name"] == "observe":
+                    tool["inputSchema"]["properties"].pop("screenshot", None)
+                if tool["name"] == "act":
+                    from .backends.windows_uia import SUPPORTED
+
+                    tool["inputSchema"]["properties"]["action"]["enum"] = sorted(k.value for k in SUPPORTED)
         self._snapshots: OrderedDict[str, DesktopSnapshot] = OrderedDict()
         self._next = 0
         self._lock = threading.Lock()  # Guards the request bookkeeping below and standard output.
@@ -392,6 +423,9 @@ class Server:
             "window": snapshot.window,
             "elements": elements,
         }
+        if snapshot.context.get("backend") == "windows_uia":
+            result["diagnostics"] = {key: snapshot.context.get(key) for key in
+                                     ("truncated", "read_errors", "foreground_required")}
         if (hint := snapshot.context.get("hint")) is not None:
             result["hint"] = hint
         return result
@@ -399,6 +433,10 @@ class Server:
     # ---- tools ---------------------------------------------------------------------
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name not in {tool["name"] for tool in self.tools}:
+            raise ToolError(f"Unsupported tool {name!r} on this backend", "unknown_tool")
+        if self.instructions != INSTRUCTIONS and name == "observe" and arguments.get("screenshot"):
+            raise ToolError("Windows MVP does not support screenshots", "unsupported_action")
         handler = getattr(self, f"tool_{name}", None)
         if handler is None:
             raise ToolError(f"Unknown tool {name!r}", "unknown_tool")
@@ -561,12 +599,12 @@ class Server:
                     "protocolVersion": params.get("protocolVersion") or PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "arc-cua", "version": package_version()},
-                    "instructions": INSTRUCTIONS,
+                    "instructions": self.instructions,
                 }
             elif method == "ping":
                 result = {}
             elif method == "tools/list":
-                result = {"tools": TOOLS}
+                result = {"tools": self.tools}
             elif method == "tools/call":
                 result = self._tool_result(params.get("name", ""), params.get("arguments") or {})
             else:

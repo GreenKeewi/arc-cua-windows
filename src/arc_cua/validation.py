@@ -35,7 +35,7 @@ def materialize_action(
     target = None
     secondary = None
 
-    if kind in _TARGETED:
+    if kind in _TARGETED or (kind == ActionKind.SCROLL and decision.target_id):
         if not decision.target_id:
             raise InvalidDecision(f"{kind.value} requires target_id")
         try:

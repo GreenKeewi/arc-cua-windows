@@ -29,7 +29,7 @@ from .safety import redact
 
 logger = logging.getLogger("arc_cua.cli")
 
-BACKENDS = ("hybrid", "ax")
+BACKENDS = ("hybrid", "ax", "windows")
 
 
 def _jev_policy(api_key: str | None, model: str | None) -> DecisionPolicy:
@@ -97,7 +97,7 @@ def parse_request(payload: Any) -> RunRequest:
         if value is not None and (not isinstance(value, str) or not value.strip()):
             raise InvalidRequest(f"provider.{field} must be a non-empty string")
 
-    backend = payload.get("backend", "hybrid")
+    backend = payload.get("backend", "windows" if sys.platform == "win32" else "hybrid")
     if backend not in BACKENDS:
         raise InvalidRequest(f"backend must be one of {list(BACKENDS)}")
 
@@ -132,6 +132,12 @@ def parse_request(payload: Any) -> RunRequest:
 
 
 def make_backend(app: Mapping[str, Any], kind: str) -> DesktopBackend:
+    if kind == "windows":
+        from .backends.windows_uia import WindowsUIABackend
+
+        if "pid" not in app:
+            raise ValueError("Windows requires app.pid; bundle_id is macOS only")
+        return WindowsUIABackend(app["pid"])
     from .backends.macos_app import MacOSApp
 
     if sys.platform != "darwin":
@@ -265,7 +271,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     mcp_parser.add_argument("-v", "--verbose", action="store_true", help="log debug detail to standard error")
+    commands.add_parser("windows-smoke", help="model-free live Windows UIA demo (opens a disposable form)")
     args = parser.parse_args(argv)
+    if args.command == "windows-smoke":
+        from .windows_smoke import main as smoke_main
+
+        return smoke_main()
 
     logging.basicConfig(
         stream=sys.stderr,
@@ -274,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    for signum in (signal.SIGTERM, signal.SIGHUP):
+    for signum in (signal.SIGTERM, getattr(signal, "SIGHUP", signal.SIGTERM)):
         signal.signal(signum, _terminate)
 
     # Only protocol lines reach standard output; anything else printed goes to standard error.
